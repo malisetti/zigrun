@@ -340,7 +340,8 @@ def main():
     ledger_record(used, "implementer", True, "", (time.time()-t0)*1000)
     pushed = push()
     print(f"  RESULT: {a.wave_id} LANDED autonomously — full suite green vs real zig; "
-          f"pushed={pushed}. Now flip WAVES.md/[x] + FEATURES, rerun evolve.sh.")
+          f"WAVES.md flipped to [x], FEATURES bumped, ledger recorded, pushed={pushed}. "
+          f"Frontier advanced — no operator steps.")
 
 
 if __name__ == "__main__":
