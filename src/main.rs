@@ -1,37 +1,42 @@
-// zigrun — a from-scratch interpreter for a SUBSET of Zig, built in Rust.
-//
-// Contract (see oracle/ and README.md): `zigrun run FILE.zig` evaluates the
-// program and the return value of `pub fn main() u8` becomes the process exit
-// code. That exit code is the EXTERNAL ORACLE — oracle/check.sh runs each
-// oracle/*.zig and compares the real exit code to oracle/<name>.exit. A worker
-// cannot make the oracle green by passing its own unit tests; the program must
-// actually run to the right answer.
-//
-// This is the oracle-first RED skeleton. The orchestration's job is to replace
-// the unimplemented pipeline below with lex -> parse -> sema -> interpret until
-// the oracle goes green, one feature slice at a time.
+mod ast;
+mod interp;
+mod lexer;
+mod parser;
 
-use std::process::exit;
+use std::env;
+use std::fs;
+use std::process;
+
+use lexer::Lexer;
+use parser::Parser;
 
 fn main() {
-    let args: Vec<String> = std::env::args().collect();
-    if args.len() < 3 || args[1] != "run" {
+    let args: Vec<String> = env::args().collect();
+    if args.len() != 3 || args[1] != "run" {
         eprintln!("usage: zigrun run <file.zig>");
-        exit(2);
+        process::exit(2);
     }
-    let path = &args[2];
-    let src = match std::fs::read_to_string(path) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("zigrun: cannot read {path}: {e}");
-            exit(2);
-        }
-    };
-    let _ = src; // pipeline not implemented yet
 
-    // RED until built: anything that is not "0" tells the oracle this slice is
-    // unimplemented. Implementers replace this with the real interpreter whose
-    // main() return value is propagated here as the exit code.
-    eprintln!("zigrun: compiler pipeline not implemented (oracle is RED until built)");
-    exit(99);
+    let path = &args[2];
+    let source = fs::read_to_string(path).unwrap_or_else(|e| {
+        eprintln!("failed to read {path}: {e}");
+        process::exit(1);
+    });
+
+    match compile_and_run(&source) {
+        Ok(code) => process::exit(code as i32),
+        Err(err) => {
+            eprintln!("{err}");
+            // Sentinel exit for compile/runtime errors, kept OUT of the oracle's
+            // result range so an erroring program can never be mistaken for one
+            // that returned a valid value (e.g. ifelse legitimately returns 1).
+            process::exit(101);
+        }
+    }
+}
+
+fn compile_and_run(source: &str) -> Result<u8, String> {
+    let tokens = Lexer::new(source).tokenize()?;
+    let program = Parser::new(tokens).parse_program()?;
+    interp::run(&program)
 }
