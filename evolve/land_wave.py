@@ -36,22 +36,30 @@ DEFAULT_WORKERS = ["agent-b147cc87.native-actor-0", "agent-b147cc87.native-actor
                    "agent-b147cc87.native-actor-2"]
 
 
-def sh(cmd, cwd=None, env=None, capture=True, check=False):
-    return subprocess.run(cmd, cwd=cwd, env=env, text=True,
-                          capture_output=capture, check=check)
+def sh(cmd, cwd=None, env=None, capture=True, check=False, timeout=120):
+    # Every subprocess gets a timeout — a hanging CLI (the relay/nfltr can hang)
+    # must never wedge the whole driver at 0% CPU (a real failure mode the first
+    # live run hit). On timeout we return a sentinel rc=124 so callers degrade.
+    try:
+        return subprocess.run(cmd, cwd=cwd, env=env, text=True,
+                              capture_output=capture, check=check, timeout=timeout)
+    except subprocess.TimeoutExpired as e:
+        return subprocess.CompletedProcess(cmd, 124, (e.stdout or ""), "TIMEOUT")
 
 
 def api_env():
+    # Prefer the keyfile over any (possibly stale) exported NFLTR_API_KEY — a live
+    # run hit HTTP 403 because the shell exported an old key that shadowed the
+    # working one in ~/.nfltr_new_key.
     env = dict(os.environ)
-    if not env.get("NFLTR_API_KEY"):
-        keyfile = Path.home() / ".nfltr_new_key"
-        if keyfile.exists():
-            env["NFLTR_API_KEY"] = keyfile.read_text().strip()
+    keyfile = Path.home() / ".nfltr_new_key"
+    if keyfile.exists():
+        env["NFLTR_API_KEY"] = keyfile.read_text().strip()
     return env
 
 
-def nfltr(*args, env=None):
-    return sh(["/Users/b/.local/bin/nfltr", *args], env=env or api_env())
+def nfltr(*args, env=None, timeout=90):
+    return sh(["/Users/b/.local/bin/nfltr", *args], env=env or api_env(), timeout=timeout)
 
 
 # ---- ledger (same shape as pkg/orchestrator OrchestrationLedger) -------------
@@ -151,25 +159,30 @@ def wait_or_redispatch(wave_id, worker, objective_file, env, retries=2):
 
 
 # ---- recover the worker's patch ---------------------------------------------
-def recover_patch(task_id, env):
-    r = nfltr("orch", "status", "--task", task_id, "--events", "5", env=env)
-    raw = r.stdout
-    i = raw.find("{", raw.find("Result:"))
-    if i < 0:
-        return None
-    depth, end = 0, None
-    for k in range(i, len(raw)):
-        if raw[k] == "{": depth += 1
-        elif raw[k] == "}":
-            depth -= 1
-            if depth == 0: end = k + 1; break
-    try:
-        obj = json.loads(raw[i:end])
-        arts = obj.get("artifacts") or []
-        if arts and arts[0].get("inline_content"):
-            return base64.b64decode(arts[0]["inline_content"])
-    except Exception as e:
-        print(f"  recover_patch parse error: {e}", flush=True)
+def recover_patch(task_id, env, attempts=3):
+    # The status call returns the full result + inline patch (can be 100KB+) and
+    # the relay is sometimes slow — retry with a generous timeout rather than
+    # giving up on a transient empty/slow response (a real failure the live run hit).
+    for _ in range(attempts):
+        r = nfltr("orch", "status", "--task", task_id, "--events", "5", env=env, timeout=180)
+        raw = r.stdout or ""
+        i = raw.find("{", raw.find("Result:")) if "Result:" in raw else -1
+        if i < 0:
+            time.sleep(5); continue
+        depth, end = 0, None
+        for k in range(i, len(raw)):
+            if raw[k] == "{": depth += 1
+            elif raw[k] == "}":
+                depth -= 1
+                if depth == 0: end = k + 1; break
+        try:
+            obj = json.loads(raw[i:end])
+            arts = obj.get("artifacts") or []
+            if arts and arts[0].get("inline_content"):
+                return base64.b64decode(arts[0]["inline_content"])
+        except Exception as e:
+            print(f"  recover_patch parse error: {e}", flush=True)
+        time.sleep(5)
     return None
 
 
@@ -192,12 +205,35 @@ def gate(wave_id, spec_path, patch_bytes):
     shutil.copytree(ZIGRUN / "oracle", sz / "oracle")
     spec_src = ZIGRUN / spec_path  # WAVES.md paths are relative to zigrun/
     shutil.copy(spec_src, sz / "oracle" / f"{wave_id}.zig")
-    # run the differential gate (real zig is truth)
-    g = sh(["bash", "oracle/diff.sh", wave_id], cwd=sz)
-    full = sh(["bash", "oracle/diff.sh"], cwd=sz)
+    # run the differential gate (real zig is truth); long timeout for cargo + zig
+    g = sh(["bash", "oracle/diff.sh", wave_id], cwd=sz, timeout=600)
+    full = sh(["bash", "oracle/diff.sh"], cwd=sz, timeout=600)
     green = (g.returncode == 0 and full.returncode == 0)
     detail = (g.stdout + g.stderr + "\n" + full.stdout + full.stderr).strip()
     return green, scratch, detail
+
+
+def bookkeep(wave_id):
+    """Flip the frontier line to landed in WAVES.md and bump the FEATURES.md
+    coverage count — so the driver is fully hands-off (no operator left to flip
+    [x] after a wave lands)."""
+    lines = WAVES.read_text().splitlines()
+    out, moved = [], None
+    for ln in lines:
+        m = re.match(rf"- \[ \] {re.escape(wave_id)} \| (\S+) \| (.+)", ln)
+        if m and moved is None:
+            moved = f"- [x] {wave_id} | oracle/{wave_id}.zig | {m.group(2)} (landed autonomously vs real zig)"
+            continue
+        out.append(ln)
+    if moved:
+        last_landed = max((i for i, l in enumerate(out) if l.startswith("- [x] ")), default=len(out) - 1)
+        out.insert(last_landed + 1, moved)
+        WAVES.write_text("\n".join(out) + "\n")
+    fp = ZIGRUN / "FEATURES.md"
+    ft = fp.read_text()
+    mm = re.search(r"~(\d+) of ~80", ft)
+    if mm:
+        fp.write_text(ft.replace(mm.group(0), f"~{int(mm.group(1)) + 1} of ~80", 1))
 
 
 # ---- merge verified src to main + bookkeep + commit --------------------------
@@ -217,10 +253,11 @@ def land_on_main(wave_id, spec_path, scratch, worker, env):
                    if wave_id not in m.group(1) else m.group(0), t)
         p.write_text(t)
     # FINAL verify on the real tree (real zig)
-    sh(["cargo", "build", "--quiet"], cwd=ZIGRUN)
-    final = sh(["bash", "oracle/diff.sh"], cwd=ZIGRUN)
+    sh(["cargo", "build", "--quiet"], cwd=ZIGRUN, timeout=300)
+    final = sh(["bash", "oracle/diff.sh"], cwd=ZIGRUN, timeout=600)
     if final.returncode != 0:
         return False, final.stdout + final.stderr
+    bookkeep(wave_id)  # flip WAVES.md [x] + bump FEATURES.md — fully hands-off
     msg = (f"feat(zigrun): {wave_id} wave — landed autonomously, verified vs real zig\n\n"
            f"Dispatched, recovered the worker patch, gated against real zig with the\n"
            f"operator's un-tampered oracle, merged the verified src, promoted the spec,\n"
@@ -229,7 +266,8 @@ def land_on_main(wave_id, spec_path, scratch, worker, env):
            f"Co-authored-by: Cursor <cursoragent@cursor.com>\n"
            f"Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>")
     sh(["git", "add", "zigrun/src", f"zigrun/oracle/{wave_id}.zig",
-        "zigrun/oracle/check.sh", "zigrun/oracle/diff.sh"], cwd=REPO)
+        "zigrun/oracle/check.sh", "zigrun/oracle/diff.sh",
+        "zigrun/evolve/WAVES.md", "zigrun/FEATURES.md"], cwd=REPO)
     subprocess.run(["git", "commit", "-q", "-F", "-"], cwd=REPO, input=msg, text=True)
     return True, final.stdout
 
