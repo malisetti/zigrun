@@ -12,6 +12,8 @@ pub enum TokenKind {
     If,
     Else,
     While,
+    For,
+    DotDot,
     Ident(String),
     Int(u8),
     Plus,
@@ -103,6 +105,13 @@ impl<'a> Lexer<'a> {
             ',' => TokenKind::Comma,
             ':' => TokenKind::Colon,
             ';' => TokenKind::Semicolon,
+            '.' => {
+                if self.eat('.') {
+                    TokenKind::DotDot
+                } else {
+                    return Err("unexpected '.' (only '..' is supported)".to_string());
+                }
+            }
             '<' => {
                 if self.eat('<') {
                     TokenKind::Shl
@@ -166,6 +175,7 @@ impl<'a> Lexer<'a> {
             "if" => TokenKind::If,
             "else" => TokenKind::Else,
             "while" => TokenKind::While,
+            "for" => TokenKind::For,
             other => TokenKind::Ident(other.to_string()),
         }
     }

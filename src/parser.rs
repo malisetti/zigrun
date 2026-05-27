@@ -9,6 +9,7 @@
 //              | "return" expr ";"
 //              | "if" "(" expr ")" block ("else" block)?
 //              | "while" "(" expr ")" block
+//              | "for" "(" expr ".." expr ")" "|" ident "|" block
 // expr        := comparison
 // comparison  := additive ((<|>|<=|>=|==|!=) additive)?
 // additive    := multiplicative ((+|-) multiplicative)*
@@ -119,6 +120,36 @@ impl Parser {
                 self.expect(TokenKind::RParen)?;
                 let body = self.parse_block()?;
                 Ok(Stmt::While { cond, body })
+            }
+            TokenKind::For => {
+                self.advance();
+                self.expect(TokenKind::LParen)?;
+                let start = self.parse_expr()?;
+                self.expect(TokenKind::DotDot)?;
+                let end = self.parse_expr()?;
+                self.expect(TokenKind::RParen)?;
+                self.expect(TokenKind::Pipe)?;
+                let capture = match self.peek_kind() {
+                    TokenKind::Ident(name) if name == "_" => {
+                        self.advance();
+                        None
+                    }
+                    TokenKind::Ident(name) => {
+                        self.advance();
+                        Some(name)
+                    }
+                    other => {
+                        return Err(format!("expected capture identifier or '_', found {other:?}"))
+                    }
+                };
+                self.expect(TokenKind::Pipe)?;
+                let body = self.parse_block()?;
+                Ok(Stmt::For {
+                    capture,
+                    start,
+                    end,
+                    body,
+                })
             }
             TokenKind::Ident(name) => {
                 // Statement-leading identifier is an assignment in this subset.

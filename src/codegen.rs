@@ -107,6 +107,25 @@ fn emit_stmt(out: &mut String, stmt: &Stmt, depth: usize) -> Result<(), String> 
             indent(out, depth);
             out.push_str("}\n");
         }
+        Stmt::For {
+            capture,
+            start,
+            end,
+            body,
+        } => {
+            let var = capture.as_deref().unwrap_or("_zig_for_i");
+            let _ = writeln!(
+                out,
+                "for (uint8_t {var} = {}; {var} < {}; {var}++) {{",
+                emit_expr(start)?,
+                emit_expr(end)?
+            );
+            for s in body {
+                emit_stmt(out, s, depth + 1)?;
+            }
+            indent(out, depth);
+            out.push_str("}\n");
+        }
     }
     Ok(())
 }
