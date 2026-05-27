@@ -123,9 +123,12 @@ def dispatch(worker, objective_file, env):
     r = nfltr("orch", "dispatch", "--worker", worker, "--role", "implementer",
               "--objective-file", objective_file, "--timeout-ms", "1500000",
               "--json", env=env)
-    m = re.search(r'"task_id":"([^"]+)"', r.stdout)
+    m = re.search(r'"task_id":"([^"]+)"', r.stdout or "")
     if not m:
-        raise RuntimeError(f"dispatch returned no task_id: {r.stdout}{r.stderr}")
+        # relay rejected/unavailable (e.g. HTTP 502) — report, don't crash. The
+        # loop backs off and retries so it auto-resumes when the relay recovers.
+        print(f"  dispatch failed (no task_id): {((r.stdout or '') + (r.stderr or '')).strip()[:140]}", flush=True)
+        return None
     return m.group(1)
 
 
@@ -136,6 +139,9 @@ def wait_or_redispatch(wave_id, worker, objective_file, env, retries=2):
     for attempt in range(retries + 1):
         w = workers[min(attempt, len(workers) - 1)]
         tid = dispatch(w, objective_file, env)
+        if tid is None:
+            time.sleep(20)  # relay unavailable — back off before retrying
+            continue
         print(f"  dispatch attempt {attempt+1}: {wave_id} -> {w}  ({tid})", flush=True)
         start = time.time(); accepted_since = None
         while time.time() - start < WAVE_DEADLINE:

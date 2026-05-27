@@ -85,17 +85,20 @@ def decompose(target, zig, zb):
         f"the program in a ```zig fence, ordered step 1 to 5."
     )
     progs = parse_programs(sh(["claude", "-p", prompt], timeout=300).stdout or "")
-    queued = []
+    valid = []  # collect in s1..s5 order
     for n in range(1, 6):
         for feat, src in progs:
             if feat != f"{target}_s{n}":
                 continue
             ze = is_gap(zig, zb, src)
             if ze is not None:
-                queue(feat, src, ze, f"ladder step for '{target}'")
-                queued.append(feat)
+                valid.append((feat, src, ze))
             break
-    return queued
+    # queue() inserts at the top of the frontier, so queue in REVERSE — that puts
+    # s1 (the smallest step) at the top, landed FIRST (the whole point of laddering).
+    for feat, src, ze in reversed(valid):
+        queue(feat, src, ze, f"ladder step for '{target}'")
+    return [f for f, _, _ in valid]
 
 
 def atomic_discover(zig, zb):
