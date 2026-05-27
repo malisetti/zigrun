@@ -83,7 +83,7 @@ impl Parser {
     fn parse_type(&mut self) -> Result<IntType, String> {
         let name = self.expect_ident()?;
         IntType::from_name(&name)
-            .ok_or_else(|| format!("unsupported type {name:?} (expected u8, u16, or u32)"))
+            .ok_or_else(|| format!("unsupported type {name:?}"))
     }
 
     fn parse_block(&mut self) -> Result<Vec<Stmt>, String> {
@@ -318,9 +318,19 @@ impl Parser {
                     target: self.return_type,
                 })
             }
+            TokenKind::Minus => {
+                self.advance();
+                match self.peek_kind() {
+                    TokenKind::Int(n) => {
+                        self.advance();
+                        Ok(Expr::Int(-(n as i64)))
+                    }
+                    other => Err(format!("expected integer after '-', found {other:?}")),
+                }
+            }
             TokenKind::Int(n) => {
                 self.advance();
-                Ok(Expr::Int(n))
+                Ok(Expr::Int(n as i64))
             }
             TokenKind::Switch => self.parse_switch(),
             TokenKind::LParen => {

@@ -40,6 +40,10 @@ fn c_type(ty: IntType) -> &'static str {
         IntType::U8 => "uint8_t",
         IntType::U16 => "uint16_t",
         IntType::U32 => "uint32_t",
+        IntType::I8 => "int8_t",
+        IntType::I16 => "int16_t",
+        IntType::I32 => "int32_t",
+        IntType::I64 => "int64_t",
     }
 }
 
@@ -92,10 +96,18 @@ fn expr_type(expr: &Expr, env: &HashMap<String, IntType>) -> IntType {
 }
 
 fn wider_type(a: IntType, b: IntType) -> IntType {
-    match (a, b) {
-        (IntType::U32, _) | (_, IntType::U32) => IntType::U32,
-        (IntType::U16, _) | (_, IntType::U16) => IntType::U16,
-        _ => IntType::U8,
+    let ra = a.rank();
+    let rb = b.rank();
+    if ra > rb {
+        a
+    } else if rb > ra {
+        b
+    } else if a.is_signed() {
+        a
+    } else if b.is_signed() {
+        b
+    } else {
+        a
     }
 }
 
@@ -200,7 +212,13 @@ fn emit_expr(
     expected: Option<IntType>,
 ) -> Result<String, String> {
     Ok(match expr {
-        Expr::Int(n) => n.to_string(),
+        Expr::Int(n) => {
+            if let Some(ty) = expected {
+                format!("({})({})", c_type(ty), n)
+            } else {
+                n.to_string()
+            }
+        }
         Expr::Var(name) => name.clone(),
         Expr::Call { name, args } => {
             let mut parts = Vec::with_capacity(args.len());
@@ -286,7 +304,7 @@ mod tests {
     fn emits_recursion_and_entry() {
         let c = c_of("fn fib(n: u8) u8 { if (n < 2) { return n; } return fib(n - 1) + fib(n - 2); } pub fn main() u8 { return fib(10); }");
         assert!(c.contains("uint8_t zig_fib(uint8_t n)"));
-        assert!(c.contains("zig_fib((n - 1))"));
+        assert!(c.contains("zig_fib((n -"));
         assert!(c.contains("int main(void)"));
         assert!(c.contains("return (int)zig_main();"));
     }

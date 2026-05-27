@@ -7,6 +7,10 @@ pub enum IntType {
     U8,
     U16,
     U32,
+    I8,
+    I16,
+    I32,
+    I64,
 }
 
 impl IntType {
@@ -15,7 +19,24 @@ impl IntType {
             "u8" => Some(IntType::U8),
             "u16" => Some(IntType::U16),
             "u32" => Some(IntType::U32),
+            "i8" => Some(IntType::I8),
+            "i16" => Some(IntType::I16),
+            "i32" => Some(IntType::I32),
+            "i64" => Some(IntType::I64),
             _ => None,
+        }
+    }
+
+    pub fn is_signed(self) -> bool {
+        matches!(self, IntType::I8 | IntType::I16 | IntType::I32 | IntType::I64)
+    }
+
+    pub fn rank(self) -> u8 {
+        match self {
+            IntType::U8 | IntType::I8 => 0,
+            IntType::U16 | IntType::I16 => 1,
+            IntType::U32 | IntType::I32 => 2,
+            IntType::I64 => 3,
         }
     }
 }
@@ -61,7 +82,7 @@ pub enum Stmt {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Expr {
-    Int(u32),
+    Int(i64),
     Var(String),
     Call { name: String, args: Vec<Expr> },
     BinOp {
