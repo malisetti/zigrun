@@ -1,33 +1,24 @@
 #!/usr/bin/env python3
-"""Self-authoring spec generator — the orchestration proposes its OWN next wave.
+"""Self-DISCOVERING spec generator — perpetuity straight from the oracle.
 
-A planner LLM (claude) writes a small valid Zig program for the next backlog
-feature; REAL ZIG then validates it mechanically:
-  - real zig compiles + runs it           -> it's valid Zig + gives ground truth
-  - the exit code is deterministic, 1..200, != 101 (the error sentinel)
-  - zigrun currently does NOT match it     -> it's a genuine gap (a RED target)
-A valid spec is added to the frontier. Truth stays EXTERNAL (real zig), so a
-self-authored spec can never assert a wrong answer — the LLM only proposes the
-program; zig decides what it does. This is what lets the orch feed itself.
+No human curriculum. The planner LLM generates a batch of diverse valid Zig
+programs; each is run through BOTH the real `zig` compiler and `zigrun`, and any
+program where they DIVERGE is, by definition, a gap zigrun must close — a
+self-discovered wave whose ground truth is real zig's behavior. The orch's
+"what's next" therefore comes from the oracle itself: every valid Zig program
+zigrun gets wrong is a target. As coverage grows, divergences get rarer/harder,
+so the loop pushes toward the frontier and self-stops when it can only surface
+gaps it has already failed.
 
-Exit 0 = authored one new spec; exit 1 = nothing left it could validly author.
+Truth stays EXTERNAL: the LLM only proposes programs; real zig decides what they
+do and which are gaps. Exit 0 = discovered + queued a new gap; 1 = none found.
 """
-import re, subprocess, sys
+import re, subprocess, sys, tempfile, os
 from pathlib import Path
 
 ZIGRUN = Path(__file__).resolve().parent.parent
 WAVES = ZIGRUN / "evolve" / "WAVES.md"
 ATTEMPTED = ZIGRUN / "evolve" / ".authored_features"
-
-# The planner's curriculum: ordered feature hints, each becomes one wave.
-BACKLOG = [
-    ("arraysum", "a fixed-size array `var a: [5]u8 = .{...}` summed with a for-loop"),
-    ("arrayidx", "fixed-size array declaration and indexing `a[i]` to return an element"),
-    ("atmod", "the @mod or @rem builtin on two integers"),
-    ("enumval", "an enum with a few variants and a switch returning a number per variant"),
-    ("structfield", "a struct with integer fields: construct it, read a field, return it"),
-    ("nestedexpr", "a deeply nested arithmetic expression combining +,-,*,/,% with parentheses"),
-]
 
 
 def sh(cmd, timeout=120, cwd=None):
@@ -40,53 +31,52 @@ def ensure_zig():
     return out[-1] if out else "zig"
 
 
-def extract_zig(text):
-    """Pull just the Zig program out of an LLM response (it may add prose)."""
-    m = re.search(r"```(?:zig)?\s*\n(.*?)```", text, re.S)
-    if m:
-        return m.group(1).strip() + "\n"
-    lines = text.splitlines()  # fallback: from the first top-level decl
-    for i, l in enumerate(lines):
-        if re.match(r"\s*(const |var |pub fn |fn )", l):
-            return "\n".join(lines[i:]).strip() + "\n"
-    return text.strip() + "\n"
-
-
-def gen_program(desc):
+def gen_batch():
+    """Ask the planner LLM for diverse candidate programs. Returns [(feature, src)]."""
     prompt = (
-        f"Write ONE small, valid Zig program (Zig 0.15) exercising this feature: {desc}.\n"
-        "Hard requirements:\n"
-        "- MUST compile and run under the real `zig` compiler.\n"
-        "- MUST have `pub fn main() u8` returning a DETERMINISTIC value between 1 and 200 "
-        "(the program's result, used as the process exit code). Never return 0 or 101.\n"
-        "- No `@import`, no std, no I/O, no printing — pure computation only.\n"
-        "- Put the program in a single ```zig code fence and nothing else of substance."
+        "Generate 8 SMALL, DIVERSE, valid Zig 0.15 programs, each exercising a DIFFERENT "
+        "language feature — pick a varied spread from: fixed/multi-dim arrays, slices, "
+        "structs (incl. nested, methods), enums, tagged unions, optionals `?T`, error unions "
+        "`!T` with try/catch, switch on ranges, defer, labeled loops/breaks, packed structs, "
+        "bit operations, comptime, vectors, character/byte logic.\n"
+        "Each program MUST: compile and run under the real `zig` compiler; have "
+        "`pub fn main() u8` returning a DETERMINISTIC value between 1 and 200 (never 0 or 101); "
+        "use NO `@import`, no std, no I/O.\n"
+        "For EACH program, output exactly a line `FEATURE: <one_word_name>` immediately followed "
+        "by the program in a ```zig code fence. Nothing else between them."
     )
-    r = sh(["claude", "-p", prompt], timeout=150)
-    return extract_zig(r.stdout or "")
+    out = sh(["claude", "-p", prompt], timeout=240).stdout or ""
+    pairs = []
+    for m in re.finditer(r"FEATURE:\s*([A-Za-z0-9_]+)\s*```(?:zig)?\s*\n(.*?)```", out, re.S):
+        pairs.append((m.group(1).strip().lower(), m.group(2).strip() + "\n"))
+    return pairs
 
 
-def validate(wave_id, src, zig, zigrun_bin):
-    spec = ZIGRUN / "oracle" / "pending" / f"{wave_id}.zig"
-    spec.write_text(src)
-    zr = sh([zig, "run", str(spec)])
-    if "error:" in (zr.stderr or "").lower():
-        spec.unlink(missing_ok=True)
-        return False, "real zig rejected the program"
-    ze = zr.returncode
-    if ze == 0 or ze == 101 or ze > 255:
-        spec.unlink(missing_ok=True)
-        return False, f"unusable result exit={ze} (need 1..200, !=101)"
-    rr = sh([zigrun_bin, "run", str(spec)])
-    if rr.returncode == ze:
-        spec.unlink(missing_ok=True)
-        return False, f"zigrun already matches ({ze}) — not a gap"
-    return True, f"VALID: real zig={ze}, zigrun diverges ({rr.returncode})"
+def real_zig_result(zig, src):
+    """(accepted, exit_code). accepted=False if real zig rejects the program."""
+    f = tempfile.NamedTemporaryFile(suffix=".zig", delete=False, mode="w")
+    f.write(src); f.close()
+    try:
+        r = sh([zig, "run", f.name])
+        if "error:" in (r.stderr or "").lower():
+            return False, None
+        return True, r.returncode
+    finally:
+        os.unlink(f.name)
 
 
-def already_known(wave_id):
+def zigrun_result(zigrun_bin, src):
+    f = tempfile.NamedTemporaryFile(suffix=".zig", delete=False, mode="w")
+    f.write(src); f.close()
+    try:
+        return sh([zigrun_bin, "run", f.name]).returncode
+    finally:
+        os.unlink(f.name)
+
+
+def already_known(feat):
     s = WAVES.read_text()
-    return (f"] {wave_id} |" in s) or (f"/{wave_id}.zig" in s)
+    return (f"] {feat} |" in s) or (f"/{feat}.zig" in s)
 
 
 def main():
@@ -95,26 +85,26 @@ def main():
     zigrun_bin = str(ZIGRUN / "target" / "debug" / "zigrun")
     done = set(ATTEMPTED.read_text().split()) if ATTEMPTED.exists() else set()
 
-    for wave_id, desc in BACKLOG:
-        if wave_id in done or already_known(wave_id):
-            continue
-        with ATTEMPTED.open("a") as f:
-            f.write(wave_id + "\n")
-        for attempt in range(3):
-            src = gen_program(desc)
-            if "fn main" not in src:
-                print(f"author {wave_id} attempt {attempt+1}: LLM gave no usable program", flush=True)
+    for batch_try in range(3):              # a few batches if the first yields no new gap
+        for feat, src in gen_batch():
+            if feat in done or already_known(feat):
                 continue
-            ok, why = validate(wave_id, src, zig, zigrun_bin)
-            print(f"author {wave_id} attempt {attempt+1}: {why}", flush=True)
-            if ok:
-                anchor = "## Frontier (pending — each is real Zig that zigrun must learn to match)\n"
-                line = f"- [ ] {wave_id} | oracle/pending/{wave_id}.zig | {desc} (self-authored, real-zig-validated)\n"
-                WAVES.write_text(WAVES.read_text().replace(anchor, anchor + line, 1))
-                print(f"AUTHORED: {wave_id} added to the frontier", flush=True)
-                return 0
-        print(f"could not author a valid spec for {wave_id} after 3 tries — moving on", flush=True)
-    print("self-author: backlog exhausted / all attempted — nothing new to propose", flush=True)
+            accepted, ze = real_zig_result(zig, src)
+            if not accepted or ze is None or ze == 0 or ze == 101 or ze > 255:
+                continue                     # not valid/usable Zig for the gate
+            if zigrun_result(zigrun_bin, src) == ze:
+                continue                     # zigrun already matches — not a gap
+            # DISCOVERED a real divergence — queue it as a self-found wave
+            (ATTEMPTED).open("a").write(feat + "\n")
+            (ZIGRUN / "oracle" / "pending" / f"{feat}.zig").write_text(src)
+            anchor = "## Frontier (pending — each is real Zig that zigrun must learn to match)\n"
+            line = (f"- [ ] {feat} | oracle/pending/{feat}.zig | self-DISCOVERED gap "
+                    f"(planner-generated, real zig={ze}, zigrun diverged)\n")
+            WAVES.write_text(WAVES.read_text().replace(anchor, anchor + line, 1))
+            print(f"DISCOVERED gap: {feat} (real zig={ze}) — queued from the oracle", flush=True)
+            return 0
+        print(f"batch {batch_try + 1}: no new divergence found", flush=True)
+    print("discover: no new gap (zigrun matches real zig on everything proposed, or all attempted)", flush=True)
     return 1
 
 
