@@ -110,6 +110,9 @@ fn expr_type(expr: &Expr, env: &HashMap<String, Type>) -> Type {
         Expr::Call { .. } => Type::Int(IntType::U8),
         Expr::Switch { default, .. } => expr_type(default, env),
         Expr::IntCast { target, .. } => Type::Int(*target),
+        Expr::Mod { left, right } | Expr::Rem { left, right } => {
+            combine_types(expr_type(left, env), expr_type(right, env))
+        }
         Expr::UnaryNeg(inner) => expr_type(inner, env),
         Expr::UnaryNot(_) => Type::Bool,
         Expr::ArrayLiteral { elems, annotated } => {
@@ -384,6 +387,12 @@ fn emit_expr(
                 emit_expr(expr, env, None)?
             )
         }
+        Expr::Mod { left, right } => {
+            emit_mod_rem(left, right, env, expected, true)?
+        }
+        Expr::Rem { left, right } => {
+            emit_mod_rem(left, right, env, expected, false)?
+        }
         Expr::UnaryNeg(operand) => {
             let ty = expected.unwrap_or(expr_type(operand, env));
             format!(
@@ -420,6 +429,35 @@ fn emit_expr(
             )
         }
     })
+}
+
+fn emit_mod_rem(
+    left: &Expr,
+    right: &Expr,
+    env: &HashMap<String, Type>,
+    expected: Option<Type>,
+    is_mod: bool,
+) -> Result<String, String> {
+    let ty = combine_types(expr_type(left, env), expr_type(right, env));
+    let int_ty = expected
+        .and_then(|t| t.int_type())
+        .or_else(|| ty.int_type())
+        .unwrap_or(IntType::U8);
+    let ct = c_int_type(int_ty);
+    let l = emit_expr(left, env, Some(Type::Int(int_ty)))?;
+    let r = emit_expr(right, env, Some(Type::Int(int_ty)))?;
+    if int_ty.is_signed() {
+        if is_mod {
+            Ok(format!(
+                "(({ct} __a = ({l}), {ct} __b = ({r}), {ct} __m = __a % __b, \
+                 (__m != 0 && ((__m < 0) != (__b < 0))) ? __m + __b : __m))"
+            ))
+        } else {
+            Ok(format!("(({ct})({l}) % ({ct})({r}))"))
+        }
+    } else {
+        Ok(format!("(({ct})({l}) % ({ct})({r}))"))
+    }
 }
 
 fn emit_switch(

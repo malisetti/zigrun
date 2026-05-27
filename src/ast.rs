@@ -153,6 +153,14 @@ pub enum Expr {
         expr: Box<Expr>,
         target: IntType,
     },
+    Mod {
+        left: Box<Expr>,
+        right: Box<Expr>,
+    },
+    Rem {
+        left: Box<Expr>,
+        right: Box<Expr>,
+    },
     UnaryNeg(Box<Expr>),
     UnaryNot(Box<Expr>),
     ArrayLiteral {

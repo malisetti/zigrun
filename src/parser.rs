@@ -491,19 +491,38 @@ impl Parser {
             TokenKind::At => {
                 self.advance();
                 let builtin = self.expect_ident()?;
-                if builtin != "intCast" {
-                    return Err(format!("unsupported builtin @{builtin}"));
-                }
                 self.expect(TokenKind::LParen)?;
-                let expr = self.parse_expr()?;
-                self.expect(TokenKind::RParen)?;
-                let target = self.return_type.int_type().ok_or_else(|| {
-                    "@intCast target must be an integer type".to_string()
-                })?;
-                Ok(Expr::IntCast {
-                    expr: Box::new(expr),
-                    target,
-                })
+                match builtin.as_str() {
+                    "intCast" => {
+                        let expr = self.parse_expr()?;
+                        self.expect(TokenKind::RParen)?;
+                        let target = self.return_type.int_type().ok_or_else(|| {
+                            "@intCast target must be an integer type".to_string()
+                        })?;
+                        Ok(Expr::IntCast {
+                            expr: Box::new(expr),
+                            target,
+                        })
+                    }
+                    "mod" | "rem" => {
+                        let left = self.parse_expr()?;
+                        self.expect(TokenKind::Comma)?;
+                        let right = self.parse_expr()?;
+                        self.expect(TokenKind::RParen)?;
+                        if builtin == "mod" {
+                            Ok(Expr::Mod {
+                                left: Box::new(left),
+                                right: Box::new(right),
+                            })
+                        } else {
+                            Ok(Expr::Rem {
+                                left: Box::new(left),
+                                right: Box::new(right),
+                            })
+                        }
+                    }
+                    other => Err(format!("unsupported builtin @{other}")),
+                }
             }
             TokenKind::True => {
                 self.advance();
@@ -690,6 +709,16 @@ fn infer_expr_type(expr: &Expr) -> Type {
         },
         Expr::Switch { default, .. } => infer_expr_type(default),
         Expr::IntCast { target, .. } => Type::Int(*target),
+        Expr::Mod { left, right } | Expr::Rem { left, right } => {
+            let lt = infer_expr_type(left);
+            let rt = infer_expr_type(right);
+            match (lt, rt) {
+                (Type::Int(a), Type::Int(b)) => Type::Int(wider_int_type(a, b)),
+                (Type::Int(a), _) => Type::Int(a),
+                (_, Type::Int(b)) => Type::Int(b),
+                _ => Type::Int(IntType::U8),
+            }
+        }
         Expr::UnaryNeg(inner) => infer_expr_type(inner),
         Expr::UnaryNot(_) => Type::Bool,
         Expr::ArrayLiteral { elems, annotated } => {
