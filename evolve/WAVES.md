@@ -19,6 +19,7 @@ durable state — stop and resume any time.
 - [x] elseif | oracle/elseif.zig | else-if chains `else if (cond) {}` — LANDED AUTONOMOUSLY by evolve/land_wave.py (fleet impl + recover + real-zig gate + merge + push, no operator in the loop), verified vs real zig = 30
 
 ## Frontier (pending — each is real Zig that zigrun must learn to match)
+- [ ] loopctl | oracle/pending/loopctl.zig | `break` and `continue` in loops: add Break/Continue statements (lexer keywords + parser + codegen lower to C break/continue). Gate: diff.sh loopctl == real zig (18).
 - [ ] inttypes | oracle/pending/inttypes.zig | RE-FOUNDATION: track real types through the pipeline so `u16`/`u32`/`i32` work (not u8-only). Likely needs a value/type model + `@intCast`/`@as`. Operator-architectural — expect a big wave.
 - [ ] print | oracle/pending/print.zig | Minimal `@import("std")` + `std.debug.print` for integers so STDOUT is observable; the differential gate then compares stdout vs real zig, not just exit codes.
 
