@@ -15,9 +15,9 @@ durable state — stop and resume any time.
 - [x] fib | oracle/fib.zig | recursion (integration)
 - [x] bitops | oracle/bitops.zig | bitwise & | ^ << >>
 - [x] forloop | oracle/forloop.zig | Zig range for-loops `for (a..b) |cap| {}` (landed via cursor agent, commit 0484779a; differentially green vs real zig = 7)
+- [x] switch | oracle/switch.zig | Zig integer switch expressions (via fleet worker patch, verified vs real zig = 30)
 
 ## Frontier (pending — each is real Zig that zigrun must learn to match)
-- [ ] switch | oracle/pending/switch.zig | Implement `switch (x) { 0 => ..., else => ... }` over integers; lower to C switch or if-chain.
 - [ ] inttypes | oracle/pending/inttypes.zig | RE-FOUNDATION: track real types through the pipeline so `u16`/`u32`/`i32` work (not u8-only). Likely needs a value/type model + `@intCast`/`@as`. Operator-architectural — expect a big wave.
 - [ ] print | oracle/pending/print.zig | Minimal `@import("std")` + `std.debug.print` for integers so STDOUT is observable; the differential gate then compares stdout vs real zig, not just exit codes.
 

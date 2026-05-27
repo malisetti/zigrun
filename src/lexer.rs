@@ -13,6 +13,8 @@ pub enum TokenKind {
     Else,
     While,
     For,
+    Switch,
+    FatArrow,
     DotDot,
     Ident(String),
     Int(u8),
@@ -130,7 +132,15 @@ impl<'a> Lexer<'a> {
                     TokenKind::Gt
                 }
             }
-            '=' => if self.eat('=') { TokenKind::EqEq } else { TokenKind::Assign },
+            '=' => {
+                if self.eat('=') {
+                    TokenKind::EqEq
+                } else if self.eat('>') {
+                    TokenKind::FatArrow
+                } else {
+                    TokenKind::Assign
+                }
+            }
             '!' => {
                 if self.eat('=') {
                     TokenKind::Ne
@@ -176,6 +186,7 @@ impl<'a> Lexer<'a> {
             "else" => TokenKind::Else,
             "while" => TokenKind::While,
             "for" => TokenKind::For,
+            "switch" => TokenKind::Switch,
             other => TokenKind::Ident(other.to_string()),
         }
     }

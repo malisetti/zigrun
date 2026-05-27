@@ -15,6 +15,7 @@
 // additive    := multiplicative ((+|-) multiplicative)*
 // multiplicative := primary ((*|/|%) primary)*
 // primary     := int | ident ("(" args? ")")? | "(" expr ")"
+//              | "switch" "(" expr ")" "{" ( int "=>" expr "," )* "else" "=>" expr "}"
 
 use crate::ast::{BinOp, Expr, Function, Program, Stmt};
 use crate::lexer::{Token, TokenKind};
@@ -273,6 +274,7 @@ impl Parser {
                 self.advance();
                 Ok(Expr::Int(n))
             }
+            TokenKind::Switch => self.parse_switch(),
             TokenKind::LParen => {
                 self.advance();
                 let e = self.parse_expr()?;
@@ -302,6 +304,47 @@ impl Parser {
             }
             other => Err(format!("expected an expression, found {other:?}")),
         }
+    }
+
+    fn parse_switch(&mut self) -> Result<Expr, String> {
+        self.advance(); // `switch`
+        self.expect(TokenKind::LParen)?;
+        let scrutinee = self.parse_expr()?;
+        self.expect(TokenKind::RParen)?;
+        self.expect(TokenKind::LBrace)?;
+        let mut arms = Vec::new();
+        let mut default = None;
+        while !self.check(&TokenKind::RBrace) && !self.check(&TokenKind::Eof) {
+            if self.check(&TokenKind::Else) {
+                self.advance();
+                self.expect(TokenKind::FatArrow)?;
+                default = Some(self.parse_expr()?);
+            } else {
+                let val = match self.peek_kind() {
+                    TokenKind::Int(n) => {
+                        self.advance();
+                        n
+                    }
+                    other => {
+                        return Err(format!(
+                            "expected integer literal in switch arm, found {other:?}"
+                        ));
+                    }
+                };
+                self.expect(TokenKind::FatArrow)?;
+                arms.push((val, self.parse_expr()?));
+            }
+            if self.check(&TokenKind::Comma) {
+                self.advance();
+            }
+        }
+        self.expect(TokenKind::RBrace)?;
+        let default = default.ok_or_else(|| "switch missing `else =>` arm".to_string())?;
+        Ok(Expr::Switch {
+            scrutinee: Box::new(scrutinee),
+            arms,
+            default: Box::new(default),
+        })
     }
 
     fn expect_ident(&mut self) -> Result<String, String> {

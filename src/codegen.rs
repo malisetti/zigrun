@@ -144,7 +144,26 @@ fn emit_expr(expr: &Expr) -> Result<String, String> {
         Expr::BinOp { op, left, right } => {
             format!("({} {} {})", emit_expr(left)?, c_op(*op), emit_expr(right)?)
         }
+        Expr::Switch {
+            scrutinee,
+            arms,
+            default,
+        } => emit_switch(scrutinee, arms, default)?,
     })
+}
+
+fn emit_switch(
+    scrutinee: &Expr,
+    arms: &[(u8, Expr)],
+    default: &Expr,
+) -> Result<String, String> {
+    let s = emit_expr(scrutinee)?;
+    let mut result = emit_expr(default)?;
+    for (val, arm_expr) in arms.iter().rev() {
+        let arm = emit_expr(arm_expr)?;
+        result = format!("(({s}) == {val} ? ({arm}) : ({result}))");
+    }
+    Ok(result)
 }
 
 fn c_op(op: BinOp) -> &'static str {

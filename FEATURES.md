@@ -22,8 +22,8 @@ zigrun compiles a **subset** of Zig to C. This scorecard tracks coverage
 - ⚠️ `pub` parsed but ignored (no real export/visibility semantics)
 
 ## Control flow
-- ✅ `if`/`else` · ✅ `while` · ✅ `for` (range, `for (a..b) |cap| {}`)
-- ❌ `switch` · ❌ `break`/`continue` · ❌ `defer`/`errdefer`
+- ✅ `if`/`else` · ✅ `while` · ✅ `for` (range, `for (a..b) |cap| {}`) · ✅ `switch` (int)
+- ❌ `break`/`continue` · ❌ `defer`/`errdefer`
 - ❌ labeled blocks/loops · ❌ `orelse`/`catch` · ❌ `unreachable`
 
 ## Operators
@@ -41,7 +41,7 @@ zigrun compiles a **subset** of Zig to C. This scorecard tracks coverage
 
 ## Honest coverage
 
-Roughly **~14 of ~80** tracked feature items are implemented — on the order of
+Roughly **~15 of ~80** tracked feature items are implemented — on the order of
 **10–15% of Zig's language-feature surface**, and far less of the real compiler's
 machinery (no comptime, no std, no backend beyond C). **This is NOT 50%.**
 Reaching meaningful coverage is the ongoing evolving work below — the scorecard

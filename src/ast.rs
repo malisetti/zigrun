@@ -44,6 +44,11 @@ pub enum Expr {
         left: Box<Expr>,
         right: Box<Expr>,
     },
+    Switch {
+        scrutinee: Box<Expr>,
+        arms: Vec<(u8, Expr)>,
+        default: Box<Expr>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
