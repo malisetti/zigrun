@@ -141,6 +141,11 @@ fn c_op(op: BinOp) -> &'static str {
         BinOp::Ge => ">=",
         BinOp::Eq => "==",
         BinOp::Ne => "!=",
+        BinOp::BitAnd => "&",
+        BinOp::BitOr => "|",
+        BinOp::BitXor => "^",
+        BinOp::Shl => "<<",
+        BinOp::Shr => ">>",
     }
 }
 

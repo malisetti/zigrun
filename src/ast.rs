@@ -53,4 +53,9 @@ pub enum BinOp {
     Ge,
     Eq,
     Ne,
+    BitAnd,
+    BitOr,
+    BitXor,
+    Shl,
+    Shr,
 }

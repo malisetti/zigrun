@@ -28,7 +28,7 @@ zigrun compiles a **subset** of Zig to C. This scorecard tracks coverage
 
 ## Operators
 - ✅ `+ - * / %` · ✅ `< > <= >= == !=`
-- ❌ bitwise `& | ^ ~ << >>` · ❌ logical `and`/`or` (short-circuit) · ❌ unary `-`/`!`
+- ✅ bitwise `& | ^ << >>` (binary) · ❌ unary `~` · ❌ logical `and`/`or` (short-circuit) · ❌ unary `-`/`!`
 - ❌ wrapping/saturating (`+%`, `+|`) · ❌ `|abs|`
 
 ## Variables & semantics
@@ -41,7 +41,7 @@ zigrun compiles a **subset** of Zig to C. This scorecard tracks coverage
 
 ## Honest coverage
 
-Roughly **~12 of ~80** tracked feature items are implemented — on the order of
+Roughly **~13 of ~80** tracked feature items are implemented — on the order of
 **10–15% of Zig's language-feature surface**, and far less of the real compiler's
 machinery (no comptime, no std, no backend beyond C). **This is NOT 50%.**
 Reaching meaningful coverage is the ongoing evolving work below — the scorecard

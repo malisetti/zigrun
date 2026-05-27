@@ -133,11 +133,33 @@ impl Parser {
     }
 
     fn parse_expr(&mut self) -> Result<Expr, String> {
-        self.parse_comparison()
+        self.parse_bitwise()
+    }
+
+    // Bitwise &, ^, | at one (lowest) left-associative level; programs use parens
+    // where precedence among them matters.
+    fn parse_bitwise(&mut self) -> Result<Expr, String> {
+        let mut left = self.parse_comparison()?;
+        loop {
+            let op = match self.peek_kind() {
+                TokenKind::Amp => BinOp::BitAnd,
+                TokenKind::Caret => BinOp::BitXor,
+                TokenKind::Pipe => BinOp::BitOr,
+                _ => break,
+            };
+            self.advance();
+            let right = self.parse_comparison()?;
+            left = Expr::BinOp {
+                op,
+                left: Box::new(left),
+                right: Box::new(right),
+            };
+        }
+        Ok(left)
     }
 
     fn parse_comparison(&mut self) -> Result<Expr, String> {
-        let left = self.parse_additive()?;
+        let left = self.parse_shift()?;
         let op = match self.peek_kind() {
             TokenKind::Lt => BinOp::Lt,
             TokenKind::Gt => BinOp::Gt,
@@ -148,12 +170,31 @@ impl Parser {
             _ => return Ok(left),
         };
         self.advance();
-        let right = self.parse_additive()?;
+        let right = self.parse_shift()?;
         Ok(Expr::BinOp {
             op,
             left: Box::new(left),
             right: Box::new(right),
         })
+    }
+
+    fn parse_shift(&mut self) -> Result<Expr, String> {
+        let mut left = self.parse_additive()?;
+        loop {
+            let op = match self.peek_kind() {
+                TokenKind::Shl => BinOp::Shl,
+                TokenKind::Shr => BinOp::Shr,
+                _ => break,
+            };
+            self.advance();
+            let right = self.parse_additive()?;
+            left = Expr::BinOp {
+                op,
+                left: Box::new(left),
+                right: Box::new(right),
+            };
+        }
+        Ok(left)
     }
 
     fn parse_additive(&mut self) -> Result<Expr, String> {

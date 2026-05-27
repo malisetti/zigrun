@@ -20,7 +20,7 @@ bin=target/debug/zigrun
 
 progs=("$@")
 if [ ${#progs[@]} -eq 0 ]; then
-  progs=(add vars ifelse while fn fib)
+  progs=(add vars ifelse while fn fib bitops)
 fi
 
 fail=0

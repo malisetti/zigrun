@@ -26,6 +26,11 @@ pub enum TokenKind {
     EqEq,
     Ne,
     Assign,
+    Amp,
+    Pipe,
+    Caret,
+    Shl,
+    Shr,
     LParen,
     RParen,
     LBrace,
@@ -88,6 +93,9 @@ impl<'a> Lexer<'a> {
             '*' => TokenKind::Star,
             '/' => TokenKind::Slash,
             '%' => TokenKind::Percent,
+            '&' => TokenKind::Amp,
+            '|' => TokenKind::Pipe,
+            '^' => TokenKind::Caret,
             '(' => TokenKind::LParen,
             ')' => TokenKind::RParen,
             '{' => TokenKind::LBrace,
@@ -95,8 +103,24 @@ impl<'a> Lexer<'a> {
             ',' => TokenKind::Comma,
             ':' => TokenKind::Colon,
             ';' => TokenKind::Semicolon,
-            '<' => if self.eat('=') { TokenKind::Le } else { TokenKind::Lt },
-            '>' => if self.eat('=') { TokenKind::Ge } else { TokenKind::Gt },
+            '<' => {
+                if self.eat('<') {
+                    TokenKind::Shl
+                } else if self.eat('=') {
+                    TokenKind::Le
+                } else {
+                    TokenKind::Lt
+                }
+            }
+            '>' => {
+                if self.eat('>') {
+                    TokenKind::Shr
+                } else if self.eat('=') {
+                    TokenKind::Ge
+                } else {
+                    TokenKind::Gt
+                }
+            }
             '=' => if self.eat('=') { TokenKind::EqEq } else { TokenKind::Assign },
             '!' => {
                 if self.eat('=') {
