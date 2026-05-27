@@ -9,8 +9,8 @@ zigrun compiles a **subset** of Zig to C. This scorecard tracks coverage
 - ❌ direct machine-code / LLVM backend · ❌ own object emission / linking
 
 ## Types
-- ✅ `u8`
-- ❌ other integer widths (`u16`/`u32`/`u64`/`usize`, `i8`…`i64`)
+- ✅ `u8` · ⚠️ unsigned widths `u16`/`u32` + `@intCast` (differential-verified incl an uncovered u32 case)
+- ❌ signed ints `i8`…`i64` (zigrun ERRORS — diverges from real zig, surfaced by the differential probe) · ❌ `u64`/`usize`
 - ❌ `bool` (currently modeled as `u8`) · ❌ `f32`/`f64` · ❌ `void`/`noreturn`
 - ❌ arrays · ❌ slices · ❌ pointers · ❌ optionals `?T` · ❌ error unions `!T`
 - ❌ `struct` · ❌ `enum` · ❌ `union` · ❌ tagged unions
@@ -36,7 +36,7 @@ zigrun compiles a **subset** of Zig to C. This scorecard tracks coverage
 - ⚠️ type annotations are parsed but IGNORED (everything is `u8`)
 - ❌ mutability enforcement (`const` reassignment not rejected) · ❌ shadowing rules
 - ⚠️ `u8` arithmetic WRAPS (C `uint8_t`) vs Zig's checked semantics — a divergence
-- ❌ comptime evaluation · ❌ `@builtins` (`@import`/`@as`/`@intCast`/…)
+- ❌ comptime evaluation · ⚠️ `@intCast` only · ❌ other `@builtins` (`@import`/`@as`/…)
 - ❌ std library · ❌ I/O / `print` · ❌ error handling · ❌ allocators/memory · ❌ async
 
 ## Honest coverage
