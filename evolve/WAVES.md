@@ -22,6 +22,9 @@ durable state — stop and resume any time.
 - [x] signedints | oracle/signedints.zig | signed integer types `i8`..`i64` — the differential probe found zigrun ERRORS on i32 where real zig works (e.g. `-5 + 8 = 3`). Extend the type model to signed widths. (landed autonomously vs real zig)
 
 ## Frontier (pending — each is real Zig that zigrun must learn to match)
+- [ ] u64wide | oracle/pending/u64wide.zig | `u64` integer width + `@intCast` — extend the int type model to 64-bit.
+- [ ] unaryneg | oracle/pending/unaryneg.zig | unary minus `-x` on signed integers.
+- [ ] boollogic | oracle/pending/boollogic.zig | `bool` type + `true`/`false` literals + logical `and`/`or`/`!`.
 - [ ] print | (spec deferred) | NEEDS ORACLE WORK FIRST: `std.debug.print` writes to STDERR but diff.sh compares stdout — gate must observe stderr (or use std.io stdout writer) before this wave is false-green-safe.
 
 ## How a wave lands
