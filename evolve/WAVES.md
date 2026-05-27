@@ -22,7 +22,7 @@ durable state — stop and resume any time.
 
 ## Frontier (pending — each is real Zig that zigrun must learn to match)
 - [ ] signedints | oracle/pending/signedints.zig | signed integer types `i8`..`i64` — the differential probe found zigrun ERRORS on i32 where real zig works (e.g. `-5 + 8 = 3`). Extend the type model to signed widths.
-- [ ] print | oracle/pending/print.zig | Minimal `@import("std")` + `std.debug.print` for integers so STDOUT is observable; the differential gate then compares stdout vs real zig, not just exit codes.
+- [ ] print | (spec deferred) | NEEDS ORACLE WORK FIRST: `std.debug.print` writes to STDERR but diff.sh compares stdout — gate must observe stderr (or use std.io stdout writer) before this wave is false-green-safe.
 
 ## How a wave lands
 1. `evolve.sh` picks the next `[ ]`, ensures zig, runs the differential gate → RED.

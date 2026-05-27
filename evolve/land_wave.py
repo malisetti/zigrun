@@ -213,6 +213,34 @@ def gate(wave_id, spec_path, patch_bytes):
     return green, scratch, detail
 
 
+def build_objective(wave_id, spec_path, desc):
+    """Auto-generate the worker objective from the spec program + the backlog
+    description, so the loop only needs the operator-authored spec (the 'what')."""
+    spec = (ZIGRUN / spec_path).read_text()
+    obj = (
+        f"Implement feature WAVE '{wave_id}' for zigrun, a Zig-subset COMPILER in Rust "
+        f"(crate at zigrun/). zigrun lowers Zig to C and runs it via cc; main()'s return is "
+        f"the exit code, and stdout is compared too. Work from the CURRENT repo (do NOT "
+        f"`git reset --hard origin/main`). Read zigrun/src/*.rs and zigrun/oracle/diff.sh.\n\n"
+        f"WAVE: {wave_id} — {desc}\n\n"
+        f"Target zigrun/oracle/pending/{wave_id}.zig — make your zigrun match REAL zig on it:\n"
+        f"{spec}\n"
+        f"Implement across zigrun/src (lexer/ast/parser/codegen) WITHOUT breaking any existing "
+        f"oracle program. Promote: `git mv zigrun/oracle/pending/{wave_id}.zig "
+        f"zigrun/oracle/{wave_id}.zig` and add '{wave_id}' to the default suite in "
+        f"zigrun/oracle/check.sh AND zigrun/oracle/diff.sh.\n\n"
+        f"VERIFY (un-fakeable; runs real zig AND your zigrun): `bash zigrun/oracle/diff.sh "
+        f"{wave_id}` must print DIFFERENTIAL GREEN and `bash zigrun/oracle/diff.sh` (full suite) "
+        f"stays green. If you cannot make it fully green, commit what compiles and say what is "
+        f"incomplete. Commit; push branch zigrun-{wave_id} if possible; ensure changes are in "
+        f"your task-result patch. No PR."
+    )
+    outdir = REPO / "out"; outdir.mkdir(exist_ok=True)
+    f = outdir / f"{wave_id}-wave.txt"
+    f.write_text(obj)
+    return str(f)
+
+
 def bookkeep(wave_id):
     """Flip the frontier line to landed in WAVES.md and bump the FEATURES.md
     coverage count — so the driver is fully hands-off (no operator left to flip
@@ -311,7 +339,7 @@ def main():
     else:
         objfile = str(REPO / "out" / f"{a.wave_id}-wave.txt")
         if not Path(objfile).exists():
-            print(f"land: objective file {objfile} missing (author it, or use --task)"); sys.exit(2)
+            objfile = build_objective(a.wave_id, spec_path, objective)  # auto from spec + backlog
         task_id, used, st = wait_or_redispatch(a.wave_id, worker, objfile, env)
         if not task_id:
             print("  RESULT: fleet would not accept the work (stalled across retries).")
