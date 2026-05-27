@@ -1,29 +1,32 @@
 #!/usr/bin/env python3
-"""Self-DISCOVERING spec generator — perpetuity straight from the oracle.
+"""Self-driving spec source for the orch — DECOMPOSITION-first, then discovery.
 
-No human curriculum. The planner LLM generates a batch of diverse valid Zig
-programs; each is run through BOTH the real `zig` compiler and `zigrun`, and any
-program where they DIVERGE is, by definition, a gap zigrun must close — a
-self-discovered wave whose ground truth is real zig's behavior. The orch's
-"what's next" therefore comes from the oracle itself: every valid Zig program
-zigrun gets wrong is a target. As coverage grows, divergences get rarer/harder,
-so the loop pushes toward the frontier and self-stops when it can only surface
-gaps it has already failed.
+The achievable atomic features are done; what remains (error unions, optionals,
+tagged unions, slices, …) is too big for one worker patch. So this primarily
+DECOMPOSES a hard target into a LADDER of small, individually-landable steps
+(step 1 = smallest first use; each step adds one increment), each validated
+against REAL ZIG (compiles+runs => ground truth; deterministic 1..200, !=101;
+zigrun currently fails it => a genuine gap). The orch lands the ladder step by
+step — each landed step makes the next a smaller gap. When all hard targets are
+laddered, it falls back to open-ended atomic discovery.
 
-Truth stays EXTERNAL: the LLM only proposes programs; real zig decides what they
-do and which are gaps. Exit 0 = discovered + queued a new gap; 1 = none found.
+Truth stays EXTERNAL: the planner only proposes programs; real zig decides.
+Exit 0 = queued new wave(s); 1 = nothing new to propose.
 """
 import re, subprocess, sys, tempfile, os
 from pathlib import Path
 
 ZIGRUN = Path(__file__).resolve().parent.parent
 WAVES = ZIGRUN / "evolve" / "WAVES.md"
-ATTEMPTED = ZIGRUN / "evolve" / ".authored_features"
+DONE = ZIGRUN / "evolve" / ".decomposed_targets"
+ANCHOR = "## Frontier (pending — each is real Zig that zigrun must learn to match)\n"
+
+# Hard features to decompose, roughly easy -> hard.
+TARGETS = ["optional", "slice", "errorset", "errorunion", "multidim",
+           "switchrange", "packedstruct", "structmethod", "taggedunion"]
 
 
 def sh(cmd, timeout=120, cwd=None):
-    # Catch timeouts (a slow `claude` call must not crash the whole self-driving
-    # loop — which the live run did, mis-read by the driver as "nothing to author").
     try:
         return subprocess.run(cmd, text=True, capture_output=True, timeout=timeout, cwd=cwd)
     except subprocess.TimeoutExpired as e:
@@ -36,80 +39,102 @@ def ensure_zig():
     return out[-1] if out else "zig"
 
 
-def gen_batch():
-    """Ask the planner LLM for diverse candidate programs. Returns [(feature, src)]."""
-    prompt = (
-        "Generate 5 SMALL, DIVERSE, valid Zig 0.15 programs, each exercising a DIFFERENT "
-        "language feature — pick a varied spread from: fixed/multi-dim arrays, slices, "
-        "structs (incl. nested, methods), enums, tagged unions, optionals `?T`, error unions "
-        "`!T` with try/catch, switch on ranges, defer, labeled loops/breaks, packed structs, "
-        "bit operations, comptime, vectors, character/byte logic.\n"
-        "Each program MUST: compile and run under the real `zig` compiler; have "
-        "`pub fn main() u8` returning a DETERMINISTIC value between 1 and 200 (never 0 or 101); "
-        "use NO `@import`, no std, no I/O.\n"
-        "For EACH program, output exactly a line `FEATURE: <one_word_name>` immediately followed "
-        "by the program in a ```zig code fence. Nothing else between them."
-    )
-    out = sh(["claude", "-p", prompt], timeout=300).stdout or ""
-    pairs = []
-    for m in re.finditer(r"FEATURE:\s*([A-Za-z0-9_]+)\s*```(?:zig)?\s*\n(.*?)```", out, re.S):
-        pairs.append((m.group(1).strip().lower(), m.group(2).strip() + "\n"))
-    return pairs
+def parse_programs(text):
+    return [(m.group(1).strip().lower(), m.group(2).strip() + "\n")
+            for m in re.finditer(r"FEATURE:\s*([A-Za-z0-9_]+)\s*```(?:zig)?\s*\n(.*?)```", text, re.S)]
 
 
-def real_zig_result(zig, src):
-    """(accepted, exit_code). accepted=False if real zig rejects the program."""
-    f = tempfile.NamedTemporaryFile(suffix=".zig", delete=False, mode="w")
-    f.write(src); f.close()
+def real_zig(zig, src):
+    f = tempfile.NamedTemporaryFile(suffix=".zig", delete=False, mode="w"); f.write(src); f.close()
     try:
         r = sh([zig, "run", f.name])
-        if "error:" in (r.stderr or "").lower():
-            return False, None
-        return True, r.returncode
+        return (None if "error:" in (r.stderr or "").lower() else r.returncode)
     finally:
         os.unlink(f.name)
 
 
-def zigrun_result(zigrun_bin, src):
-    f = tempfile.NamedTemporaryFile(suffix=".zig", delete=False, mode="w")
-    f.write(src); f.close()
+def zigrun_exit(zb, src):
+    f = tempfile.NamedTemporaryFile(suffix=".zig", delete=False, mode="w"); f.write(src); f.close()
     try:
-        return sh([zigrun_bin, "run", f.name]).returncode
+        return sh([zb, "run", f.name]).returncode
     finally:
         os.unlink(f.name)
 
 
-def already_known(feat):
-    s = WAVES.read_text()
-    return (f"] {feat} |" in s) or (f"/{feat}.zig" in s)
+def is_gap(zig, zb, src):
+    ze = real_zig(zig, src)
+    if ze is None or ze == 0 or ze == 101 or ze > 255:
+        return None
+    return ze if zigrun_exit(zb, src) != ze else None
+
+
+def queue(wave_id, src, ze, note):
+    (ZIGRUN / "oracle" / "pending" / f"{wave_id}.zig").write_text(src)
+    line = f"- [ ] {wave_id} | oracle/pending/{wave_id}.zig | {note} (real zig={ze})\n"
+    WAVES.write_text(WAVES.read_text().replace(ANCHOR, ANCHOR + line, 1))
+
+
+def decompose(target, zig, zb):
+    """Ask the planner for a 5-step incremental ladder; queue the valid steps in order."""
+    prompt = (
+        f"Decompose the Zig 0.15 feature '{target}' into a LADDER of exactly 5 SMALL programs "
+        f"that build it INCREMENTALLY: step 1 is the absolute smallest first use, each later "
+        f"step adds ONE increment, step 5 is a full use. Each program MUST compile and run "
+        f"under real zig, have `pub fn main() u8` returning a DETERMINISTIC value 1..200 (never "
+        f"0 or 101), and use NO @import/std/IO. For EACH, output `FEATURE: {target}_s<N>` then "
+        f"the program in a ```zig fence, ordered step 1 to 5."
+    )
+    progs = parse_programs(sh(["claude", "-p", prompt], timeout=300).stdout or "")
+    queued = []
+    for n in range(1, 6):
+        for feat, src in progs:
+            if feat != f"{target}_s{n}":
+                continue
+            ze = is_gap(zig, zb, src)
+            if ze is not None:
+                queue(feat, src, ze, f"ladder step for '{target}'")
+                queued.append(feat)
+            break
+    return queued
+
+
+def atomic_discover(zig, zb):
+    prompt = (
+        "Generate 5 SMALL, DIVERSE, valid Zig 0.15 programs exercising DIFFERENT features. Each: "
+        "compiles+runs under real zig; `pub fn main() u8` returns a deterministic 1..200 (not "
+        "0/101); no @import/std/IO. For each output `FEATURE: <one_word>` then a ```zig fence."
+    )
+    for feat, src in parse_programs(sh(["claude", "-p", prompt], timeout=300).stdout or ""):
+        if f"] {feat} |" in WAVES.read_text() or f"/{feat}.zig" in WAVES.read_text():
+            continue
+        ze = is_gap(zig, zb, src)
+        if ze is not None:
+            queue(feat, src, ze, "self-discovered atomic gap")
+            print(f"DISCOVERED atomic gap: {feat} (real zig={ze})", flush=True)
+            return True
+    return False
 
 
 def main():
     zig = ensure_zig()
     sh(["cargo", "build", "--quiet"], cwd=str(ZIGRUN), timeout=300)
-    zigrun_bin = str(ZIGRUN / "target" / "debug" / "zigrun")
-    done = set(ATTEMPTED.read_text().split()) if ATTEMPTED.exists() else set()
+    zb = str(ZIGRUN / "target" / "debug" / "zigrun")
+    done = set(DONE.read_text().split()) if DONE.exists() else set()
 
-    for batch_try in range(3):              # a few batches if the first yields no new gap
-        for feat, src in gen_batch():
-            if feat in done or already_known(feat):
-                continue
-            accepted, ze = real_zig_result(zig, src)
-            if not accepted or ze is None or ze == 0 or ze == 101 or ze > 255:
-                continue                     # not valid/usable Zig for the gate
-            if zigrun_result(zigrun_bin, src) == ze:
-                continue                     # zigrun already matches — not a gap
-            # DISCOVERED a real divergence — queue it as a self-found wave
-            (ATTEMPTED).open("a").write(feat + "\n")
-            (ZIGRUN / "oracle" / "pending" / f"{feat}.zig").write_text(src)
-            anchor = "## Frontier (pending — each is real Zig that zigrun must learn to match)\n"
-            line = (f"- [ ] {feat} | oracle/pending/{feat}.zig | self-DISCOVERED gap "
-                    f"(planner-generated, real zig={ze}, zigrun diverged)\n")
-            WAVES.write_text(WAVES.read_text().replace(anchor, anchor + line, 1))
-            print(f"DISCOVERED gap: {feat} (real zig={ze}) — queued from the oracle", flush=True)
+    for target in TARGETS:
+        if target in done:
+            continue
+        with DONE.open("a") as f:
+            f.write(target + "\n")
+        steps = decompose(target, zig, zb)
+        if steps:
+            print(f"DECOMPOSED '{target}' into {len(steps)} landable steps: {' '.join(steps)}", flush=True)
             return 0
-        print(f"batch {batch_try + 1}: no new divergence found", flush=True)
-    print("discover: no new gap (zigrun matches real zig on everything proposed, or all attempted)", flush=True)
+        print(f"could not decompose '{target}' into validated steps — next target", flush=True)
+
+    if atomic_discover(zig, zb):
+        return 0
+    print("spec_author: no new ladder or atomic gap to propose", flush=True)
     return 1
 
 
