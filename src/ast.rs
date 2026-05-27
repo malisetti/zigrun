@@ -6,6 +6,7 @@
 pub enum Type {
     Bool,
     Int(IntType),
+    Optional { inner: Box<Type> },
     Array { len: usize, elem: Box<Type> },
     Enum(String),
     Struct(String),
@@ -23,9 +24,17 @@ impl Type {
         match self {
             Type::Bool => None,
             Type::Int(t) => Some(*t),
+            Type::Optional { inner } => inner.int_type(),
             Type::Array { elem, .. } => elem.int_type(),
             Type::Enum(_) => None,
             Type::Struct(_) => None,
+        }
+    }
+
+    pub fn optional_inner(&self) -> Option<Type> {
+        match self {
+            Type::Optional { inner } => Some(inner.as_ref().clone()),
+            _ => None,
         }
     }
 
@@ -46,6 +55,7 @@ impl Type {
     pub fn scalar_int_type(&self) -> Option<IntType> {
         match self {
             Type::Int(t) => Some(*t),
+            Type::Optional { inner } => inner.scalar_int_type(),
             Type::Array { elem, .. } => elem.scalar_int_type(),
             _ => None,
         }
@@ -223,6 +233,11 @@ pub enum Expr {
     FieldAccess {
         base: Box<Expr>,
         field: String,
+    },
+    Null,
+    Orelse {
+        opt: Box<Expr>,
+        default: Box<Expr>,
     },
 }
 

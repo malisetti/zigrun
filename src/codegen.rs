@@ -32,6 +32,10 @@ pub fn emit_c(program: &Program) -> Result<String, String> {
         emit_struct_def(&mut out, s)?;
     }
 
+    for inner in collect_optional_inners(program) {
+        emit_optional_typedef(&mut out, &inner)?;
+    }
+
     for f in &program.functions {
         let _ = writeln!(out, "{};", prototype(f));
     }
@@ -66,9 +70,148 @@ fn emit_struct_def(out: &mut String, s: &StructDecl) -> Result<(), String> {
     Ok(())
 }
 
+fn opt_c_name(inner: &Type) -> String {
+    format!("zigrun_opt_{}", c_type(inner).replace(' ', "_"))
+}
+
+fn emit_optional_typedef(out: &mut String, inner: &Type) -> Result<(), String> {
+    let name = opt_c_name(inner);
+    let _ = writeln!(
+        out,
+        "typedef struct {{ {} value; bool present; }} {};",
+        c_type(inner),
+        name
+    );
+    out.push('\n');
+    Ok(())
+}
+
+fn collect_optional_inners(program: &Program) -> Vec<Type> {
+    let mut seen = std::collections::HashSet::new();
+    let mut result = Vec::new();
+    let mut add = |ty: &Type| {
+        if let Type::Optional { inner } = ty {
+            let key = format!("{:?}", inner);
+            if seen.insert(key) {
+                result.push(inner.as_ref().clone());
+            }
+        }
+    };
+    for f in &program.functions {
+        add(&f.return_type);
+        for (_, ty) in &f.params {
+            add(ty);
+        }
+        for s in &f.body {
+            collect_optional_in_stmt(s, &mut add);
+        }
+    }
+    result
+}
+
+fn collect_optional_in_stmt(stmt: &Stmt, add: &mut dyn FnMut(&Type)) {
+    match stmt {
+        Stmt::Let { ty, value, .. } => {
+            add(ty);
+            collect_optional_in_expr(value, add);
+        }
+        Stmt::Assign { value, .. } => collect_optional_in_expr(value, add),
+        Stmt::Return(e) => collect_optional_in_expr(e, add),
+        Stmt::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
+            collect_optional_in_expr(cond, add);
+            for s in then_branch {
+                collect_optional_in_stmt(s, add);
+            }
+            if let Some(eb) = else_branch {
+                for s in eb {
+                    collect_optional_in_stmt(s, add);
+                }
+            }
+        }
+        Stmt::While { cond, body } => {
+            collect_optional_in_expr(cond, add);
+            for s in body {
+                collect_optional_in_stmt(s, add);
+            }
+        }
+        Stmt::ForRange { start, end, body, .. } => {
+            collect_optional_in_expr(start, add);
+            collect_optional_in_expr(end, add);
+            for s in body {
+                collect_optional_in_stmt(s, add);
+            }
+        }
+        Stmt::ForArray { body, .. } => {
+            for s in body {
+                collect_optional_in_stmt(s, add);
+            }
+        }
+        Stmt::Break | Stmt::Continue => {}
+    }
+}
+
+fn collect_optional_in_expr(expr: &Expr, add: &mut dyn FnMut(&Type)) {
+    match expr {
+        Expr::Orelse { opt, default } => {
+            collect_optional_in_expr(opt, add);
+            collect_optional_in_expr(default, add);
+        }
+        Expr::BinOp { left, right, .. } => {
+            collect_optional_in_expr(left, add);
+            collect_optional_in_expr(right, add);
+        }
+        Expr::Call { args, .. } => {
+            for a in args {
+                collect_optional_in_expr(a, add);
+            }
+        }
+        Expr::Switch {
+            scrutinee,
+            arms,
+            default,
+        } => {
+            collect_optional_in_expr(scrutinee, add);
+            for (_, e) in arms {
+                collect_optional_in_expr(e, add);
+            }
+            if let Some(d) = default {
+                collect_optional_in_expr(d, add);
+            }
+        }
+        Expr::IntCast { expr, .. } | Expr::UnaryNeg(expr) | Expr::UnaryNot(expr) => {
+            collect_optional_in_expr(expr, add);
+        }
+        Expr::Mod { left, right } | Expr::Rem { left, right } => {
+            collect_optional_in_expr(left, add);
+            collect_optional_in_expr(right, add);
+        }
+        Expr::ArrayLiteral { elems, .. } => {
+            for e in elems {
+                collect_optional_in_expr(e, add);
+            }
+        }
+        Expr::Index { base, index } => {
+            collect_optional_in_expr(base, add);
+            collect_optional_in_expr(index, add);
+        }
+        Expr::StructLiteral { fields, .. } => {
+            for (_, e) in fields {
+                collect_optional_in_expr(e, add);
+            }
+        }
+        Expr::FieldAccess { base, .. } => collect_optional_in_expr(base, add),
+        _ => {}
+    }
+}
+
 fn c_type(ty: &Type) -> String {
     match ty {
         Type::Bool => "bool".to_string(),
+        Type::Optional { inner } => opt_c_name(inner),
         Type::Int(IntType::U8) => "uint8_t".to_string(),
         Type::Int(IntType::U16) => "uint16_t".to_string(),
         Type::Int(IntType::U32) => "uint32_t".to_string(),
@@ -212,6 +355,10 @@ fn expr_type(
         Expr::Undefined => Type::Int(IntType::U8),
         Expr::StructLiteral { struct_name, .. } => Type::Struct(struct_name.clone()),
         Expr::FieldAccess { base, field } => field_type(base, field, env, layouts),
+        Expr::Null => Type::Optional {
+            inner: Box::new(Type::Int(IntType::U8)),
+        },
+        Expr::Orelse { default, .. } => expr_type(default, env, layouts),
     }
 }
 
@@ -314,7 +461,7 @@ fn emit_stmt(
                     out,
                     "{} = {};",
                     c_var_decl(name, ty),
-                    emit_expr(value, env, Some(ty.clone()), layouts)?
+                    emit_expr_with_optional_wrap(value, env, ty, layouts)?
                 );
             }
             env.insert(name.clone(), ty.clone());
@@ -470,6 +617,30 @@ fn emit_assign_target(
     })
 }
 
+fn emit_expr_with_optional_wrap(
+    expr: &Expr,
+    env: &HashMap<String, Type>,
+    ty: &Type,
+    layouts: &HashMap<String, Vec<(String, Type)>>,
+) -> Result<String, String> {
+    if let Type::Optional { inner } = ty {
+        if matches!(expr, Expr::Int(_) | Expr::Bool(_) | Expr::Var(_)) {
+            let inner_ty = inner.as_ref().clone();
+            let val = emit_expr(expr, env, Some(inner_ty.clone()), layouts)?;
+            let opt_name = opt_c_name(inner);
+            return Ok(format!("({opt_name}){{ .value = {val}, .present = true }}"));
+        }
+        if matches!(expr, Expr::Null) {
+            let opt_name = opt_c_name(inner);
+            return Ok(format!(
+                "({opt_name}){{ .value = ({})0, .present = false }}",
+                c_type(inner)
+            ));
+        }
+    }
+    emit_expr(expr, env, Some(ty.clone()), layouts)
+}
+
 fn emit_expr(
     expr: &Expr,
     env: &HashMap<String, Type>,
@@ -587,6 +758,28 @@ fn emit_expr(
         Expr::FieldAccess { base, field } => {
             let base_c = emit_expr(base, env, None, layouts)?;
             format!("({base_c}).{field}")
+        }
+        Expr::Null => {
+            let inner = expected
+                .and_then(|t| t.optional_inner())
+                .unwrap_or(Type::Int(IntType::U8));
+            let opt_name = opt_c_name(&inner);
+            format!(
+                "({opt_name}){{ .value = ({})0, .present = false }}",
+                c_type(&inner)
+            )
+        }
+        Expr::Orelse { opt, default } => {
+            let opt_ty = expr_type(opt, env, layouts);
+            if opt_ty.optional_inner().is_none() {
+                return Err(format!("orelse requires optional lhs, found {opt_ty:?}"));
+            }
+            let def_ty = expr_type(default, env, layouts);
+            let opt_c = emit_expr(opt, env, Some(opt_ty), layouts)?;
+            let def_c = emit_expr(default, env, Some(def_ty), layouts)?;
+            format!(
+                "(({opt_c}).present ? ({opt_c}).value : ({def_c}))"
+            )
         }
     })
 }

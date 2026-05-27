@@ -154,6 +154,13 @@ impl Parser {
     }
 
     fn parse_type(&mut self) -> Result<Type, String> {
+        if self.check(&TokenKind::Question) {
+            self.advance();
+            let inner = self.parse_type()?;
+            return Ok(Type::Optional {
+                inner: Box::new(inner),
+            });
+        }
         if self.check(&TokenKind::LBracket) {
             self.advance();
             let len = match self.peek_kind() {
@@ -397,7 +404,20 @@ impl Parser {
     }
 
     fn parse_expr(&mut self) -> Result<Expr, String> {
-        self.parse_logical_or()
+        self.parse_orelse()
+    }
+
+    fn parse_orelse(&mut self) -> Result<Expr, String> {
+        let mut left = self.parse_logical_or()?;
+        if self.check(&TokenKind::Orelse) {
+            self.advance();
+            let right = self.parse_orelse()?;
+            left = Expr::Orelse {
+                opt: Box::new(left),
+                default: Box::new(right),
+            };
+        }
+        Ok(left)
     }
 
     fn parse_logical_or(&mut self) -> Result<Expr, String> {
@@ -637,6 +657,10 @@ impl Parser {
             TokenKind::Undefined => {
                 self.advance();
                 Ok(Expr::Undefined)
+            }
+            TokenKind::Null => {
+                self.advance();
+                Ok(Expr::Null)
             }
             TokenKind::Int(n) => {
                 self.advance();
@@ -889,6 +913,10 @@ fn infer_expr_type(
         Expr::Undefined => Type::Int(IntType::U8),
         Expr::StructLiteral { struct_name, .. } => Type::Struct(struct_name.clone()),
         Expr::FieldAccess { base, field } => infer_field_type(base, field, enums, structs),
+        Expr::Null => Type::Optional {
+            inner: Box::new(Type::Int(IntType::U8)),
+        },
+        Expr::Orelse { default, .. } => infer_expr_type(default, enums, structs),
     }
 }
 

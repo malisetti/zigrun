@@ -28,6 +28,9 @@ pub enum TokenKind {
     Dot,
     DotDot,
     Undefined,
+    Null,
+    Orelse,
+    Question,
     Ident(String),
     Int(u64),
     At,
@@ -201,6 +204,7 @@ impl<'a> Lexer<'a> {
                     TokenKind::Bang
                 }
             }
+            '?' => TokenKind::Question,
             other => return Err(format!("unexpected character {other:?}")),
         };
         Ok(kind)
@@ -250,6 +254,8 @@ impl<'a> Lexer<'a> {
             "and" => TokenKind::And,
             "or" => TokenKind::Or,
             "undefined" => TokenKind::Undefined,
+            "null" => TokenKind::Null,
+            "orelse" => TokenKind::Orelse,
             other => TokenKind::Ident(other.to_string()),
         }
     }
