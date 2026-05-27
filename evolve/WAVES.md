@@ -27,6 +27,7 @@ durable state — stop and resume any time.
 - [x] arrayidx | oracle/arrayidx.zig | fixed-size array declaration + indexing a[i] (self-authored, real-zig-validated) (landed autonomously vs real zig)
 - [x] atmod | oracle/atmod.zig | the @mod or @rem builtin on two integers (self-authored, real-zig-validated) (landed autonomously vs real zig)
 - [x] structfield | oracle/structfield.zig | a struct with integer fields: construct it, read a field, return it (self-authored, real-zig-validated) (landed autonomously vs real zig)
+- [x] arrays | oracle/arrays.zig | self-DISCOVERED gap (planner-generated, real zig=36, zigrun diverged) (landed autonomously vs real zig)
 
 ## Frontier (pending — each is real Zig that zigrun must learn to match)
 - [ ] enumval | oracle/pending/enumval.zig | an enum with a few variants and a switch returning a number per variant (self-authored, real-zig-validated)
