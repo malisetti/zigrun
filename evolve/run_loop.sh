@@ -6,7 +6,7 @@ cd "$(dirname "$0")/.." || exit 2   # zigrun/
 attempted=" "; landed=""; failed=""
 for round in $(seq 1 8); do
   next=""
-  for id in $(grep -oE '^- \[ \] [a-zA-Z0-9_]+' evolve/WAVES.md | awk '{print $3}'); do
+  for id in $(grep -oE '^- \[ \] [a-zA-Z0-9_]+' evolve/WAVES.md | awk '{print $NF}'); do
     [ -f "oracle/pending/$id.zig" ] || continue          # only waves with a spec
     case "$attempted" in *" $id "*) continue ;; esac      # skip already-attempted
     next="$id"; break
