@@ -190,7 +190,7 @@ def gate(wave_id, spec_path, patch_bytes):
     # overlay OUR oracle (discard whatever the worker shipped) + promote OUR spec
     shutil.rmtree(sz / "oracle", ignore_errors=True)
     shutil.copytree(ZIGRUN / "oracle", sz / "oracle")
-    spec_src = REPO / spec_path
+    spec_src = ZIGRUN / spec_path  # WAVES.md paths are relative to zigrun/
     shutil.copy(spec_src, sz / "oracle" / f"{wave_id}.zig")
     # run the differential gate (real zig is truth)
     g = sh(["bash", "oracle/diff.sh", wave_id], cwd=sz)
@@ -207,8 +207,8 @@ def land_on_main(wave_id, spec_path, scratch, worker, env):
         src = sz / "src" / f
         if src.exists():
             shutil.copy(src, ZIGRUN / "src" / f)
-    # promote spec into the suite
-    sh(["git", "mv", spec_path, f"zigrun/oracle/{wave_id}.zig"], cwd=REPO)
+    # promote spec into the suite (git runs from REPO; spec_path is under zigrun/)
+    sh(["git", "mv", f"zigrun/{spec_path}", f"zigrun/oracle/{wave_id}.zig"], cwd=REPO)
     # derive expected exit from real zig and extend the default suites
     for suite in ("check.sh", "diff.sh"):
         p = ZIGRUN / "oracle" / suite
@@ -257,8 +257,8 @@ def main():
     spec_path, objective = find_pending(a.wave_id)
     if not spec_path:
         print(f"land: no pending wave '{a.wave_id}' in WAVES.md"); sys.exit(2)
-    if not (REPO / spec_path).exists():
-        print(f"land: spec program missing: {spec_path} (operator/planner authors the 'what')")
+    if not (ZIGRUN / spec_path).exists():  # WAVES.md paths are relative to zigrun/
+        print(f"land: spec program missing: zigrun/{spec_path} (operator/planner authors the 'what')")
         sys.exit(2)
     sh(["bash", str(ZIGRUN / "oracle" / "ensure_zig.sh")])  # self-provision truth
 
