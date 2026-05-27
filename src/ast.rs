@@ -2,6 +2,24 @@
 // cover let (const/var), assignment, return, if/else, and while; expressions
 // cover integer literals, variable refs, function calls, and binary operators.
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IntType {
+    U8,
+    U16,
+    U32,
+}
+
+impl IntType {
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "u8" => Some(IntType::U8),
+            "u16" => Some(IntType::U16),
+            "u32" => Some(IntType::U32),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Program {
     pub functions: Vec<Function>,
@@ -10,14 +28,19 @@ pub struct Program {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Function {
     pub name: String,
-    pub params: Vec<String>,
+    pub params: Vec<(String, IntType)>,
+    pub return_type: IntType,
     pub body: Vec<Stmt>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Stmt {
     /// `const`/`var` binding — mutability is not enforced in this subset.
-    Let { name: String, value: Expr },
+    Let {
+        name: String,
+        ty: IntType,
+        value: Expr,
+    },
     Assign { name: String, value: Expr },
     Return(Expr),
     If {
@@ -38,7 +61,7 @@ pub enum Stmt {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Expr {
-    Int(u8),
+    Int(u32),
     Var(String),
     Call { name: String, args: Vec<Expr> },
     BinOp {
@@ -48,8 +71,12 @@ pub enum Expr {
     },
     Switch {
         scrutinee: Box<Expr>,
-        arms: Vec<(u8, Expr)>,
+        arms: Vec<(u32, Expr)>,
         default: Box<Expr>,
+    },
+    IntCast {
+        expr: Box<Expr>,
+        target: IntType,
     },
 }
 

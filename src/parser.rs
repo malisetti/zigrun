@@ -1,10 +1,10 @@
 // Recursive-descent parser for the zigrun Zig subset.
 //
 // program     := function+
-// function    := "pub"? "fn" ident "(" params? ")" ident block
-// params      := ident ":" ident ("," ident ":" ident)*
+// function    := "pub"? "fn" ident "(" params? ")" type block
+// params      := ident ":" type ("," ident ":" type)*
 // block       := "{" stmt* "}"
-// stmt        := ("const"|"var") ident ":" ident "=" expr ";"
+// stmt        := ("const"|"var") ident ":" type "=" expr ";"
 //              | ident "=" expr ";"
 //              | "return" expr ";"
 //              | "if" "(" expr ")" block ("else" (block | "if" ...))?
@@ -16,18 +16,24 @@
 // multiplicative := primary ((*|/|%) primary)*
 // primary     := int | ident ("(" args? ")")? | "(" expr ")"
 //              | "switch" "(" expr ")" "{" ( int "=>" expr "," )* "else" "=>" expr "}"
+//              | "@intCast" "(" expr ")"
 
-use crate::ast::{BinOp, Expr, Function, Program, Stmt};
+use crate::ast::{BinOp, Expr, Function, IntType, Program, Stmt};
 use crate::lexer::{Token, TokenKind};
 
 pub struct Parser {
     tokens: Vec<Token>,
     pos: usize,
+    return_type: IntType,
 }
 
 impl Parser {
     pub fn new(tokens: Vec<Token>) -> Self {
-        Self { tokens, pos: 0 }
+        Self {
+            tokens,
+            pos: 0,
+            return_type: IntType::U8,
+        }
     }
 
     pub fn parse_program(mut self) -> Result<Program, String> {
@@ -53,8 +59,8 @@ impl Parser {
             loop {
                 let p = self.expect_ident()?;
                 self.expect(TokenKind::Colon)?;
-                let _ty = self.expect_ident()?; // type annotation, ignored (u8 subset)
-                params.push(p);
+                let ty = self.parse_type()?;
+                params.push((p, ty));
                 if self.check(&TokenKind::Comma) {
                     self.advance();
                 } else {
@@ -63,9 +69,21 @@ impl Parser {
             }
         }
         self.expect(TokenKind::RParen)?;
-        let _ret = self.expect_ident()?; // return type, ignored (u8 subset)
+        let return_type = self.parse_type()?;
+        self.return_type = return_type;
         let body = self.parse_block()?;
-        Ok(Function { name, params, body })
+        Ok(Function {
+            name,
+            params,
+            return_type,
+            body,
+        })
+    }
+
+    fn parse_type(&mut self) -> Result<IntType, String> {
+        let name = self.expect_ident()?;
+        IntType::from_name(&name)
+            .ok_or_else(|| format!("unsupported type {name:?} (expected u8, u16, or u32)"))
     }
 
     fn parse_block(&mut self) -> Result<Vec<Stmt>, String> {
@@ -84,11 +102,11 @@ impl Parser {
                 self.advance();
                 let name = self.expect_ident()?;
                 self.expect(TokenKind::Colon)?;
-                let _ty = self.expect_ident()?;
+                let ty = self.parse_type()?;
                 self.expect(TokenKind::Assign)?;
                 let value = self.parse_expr()?;
                 self.expect(TokenKind::Semicolon)?;
-                Ok(Stmt::Let { name, value })
+                Ok(Stmt::Let { name, ty, value })
             }
             TokenKind::Return => {
                 self.advance();
@@ -149,7 +167,6 @@ impl Parser {
                 })
             }
             TokenKind::Ident(name) => {
-                // Statement-leading identifier is an assignment in this subset.
                 self.advance();
                 self.expect(TokenKind::Assign)?;
                 let value = self.parse_expr()?;
@@ -187,8 +204,6 @@ impl Parser {
         self.parse_bitwise()
     }
 
-    // Bitwise &, ^, | at one (lowest) left-associative level; programs use parens
-    // where precedence among them matters.
     fn parse_bitwise(&mut self) -> Result<Expr, String> {
         let mut left = self.parse_comparison()?;
         loop {
@@ -289,6 +304,20 @@ impl Parser {
 
     fn parse_primary(&mut self) -> Result<Expr, String> {
         match self.peek_kind() {
+            TokenKind::At => {
+                self.advance();
+                let builtin = self.expect_ident()?;
+                if builtin != "intCast" {
+                    return Err(format!("unsupported builtin @{builtin}"));
+                }
+                self.expect(TokenKind::LParen)?;
+                let expr = self.parse_expr()?;
+                self.expect(TokenKind::RParen)?;
+                Ok(Expr::IntCast {
+                    expr: Box::new(expr),
+                    target: self.return_type,
+                })
+            }
             TokenKind::Int(n) => {
                 self.advance();
                 Ok(Expr::Int(n))
@@ -326,7 +355,7 @@ impl Parser {
     }
 
     fn parse_switch(&mut self) -> Result<Expr, String> {
-        self.advance(); // `switch`
+        self.advance();
         self.expect(TokenKind::LParen)?;
         let scrutinee = self.parse_expr()?;
         self.expect(TokenKind::RParen)?;
@@ -415,6 +444,6 @@ mod tests {
         let prog = Parser::new(toks).parse_program().unwrap();
         assert_eq!(prog.functions.len(), 2);
         assert_eq!(prog.functions[0].name, "fib");
-        assert_eq!(prog.functions[0].params, vec!["n".to_string()]);
+        assert_eq!(prog.functions[0].params, vec![("n".to_string(), IntType::U8)]);
     }
 }

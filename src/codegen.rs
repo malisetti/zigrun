@@ -6,7 +6,8 @@
 // u8 semantics here are C's `uint8_t` (wrapping), a known divergence from Zig's
 // checked arithmetic — tracked in FEATURES.md.
 
-use crate::ast::{BinOp, Expr, Function, Program, Stmt};
+use crate::ast::{BinOp, Expr, Function, IntType, Program, Stmt};
+use std::collections::HashMap;
 use std::fmt::Write;
 
 pub fn emit_c(program: &Program) -> Result<String, String> {
@@ -16,7 +17,6 @@ pub fn emit_c(program: &Program) -> Result<String, String> {
     let mut out = String::new();
     out.push_str("#include <stdint.h>\n\n");
 
-    // Forward declarations so functions may call each other / recurse.
     for f in &program.functions {
         let _ = writeln!(out, "{};", prototype(f));
     }
@@ -27,15 +27,20 @@ pub fn emit_c(program: &Program) -> Result<String, String> {
         out.push('\n');
     }
 
-    // C entry point: Zig `pub fn main() u8` → process exit code.
     out.push_str("int main(void) {\n    return (int)zig_main();\n}\n");
     Ok(out)
 }
 
-/// C-safe name: `main` is renamed (the C entry wrapper owns `main`), and every
-/// user function is prefixed to avoid clashing with libc symbols.
 fn c_fn(name: &str) -> String {
     format!("zig_{name}")
+}
+
+fn c_type(ty: IntType) -> &'static str {
+    match ty {
+        IntType::U8 => "uint8_t",
+        IntType::U16 => "uint16_t",
+        IntType::U32 => "uint32_t",
+    }
 }
 
 fn prototype(f: &Function) -> String {
@@ -44,17 +49,26 @@ fn prototype(f: &Function) -> String {
     } else {
         f.params
             .iter()
-            .map(|p| format!("uint8_t {p}"))
+            .map(|(p, ty)| format!("{} {p}", c_type(*ty)))
             .collect::<Vec<_>>()
             .join(", ")
     };
-    format!("uint8_t {}({})", c_fn(&f.name), params)
+    format!(
+        "{} {}({})",
+        c_type(f.return_type),
+        c_fn(&f.name),
+        params
+    )
 }
 
 fn emit_function(out: &mut String, f: &Function) -> Result<(), String> {
     let _ = writeln!(out, "{} {{", prototype(f));
+    let mut env: HashMap<String, IntType> = HashMap::new();
+    for (name, ty) in &f.params {
+        env.insert(name.clone(), *ty);
+    }
     for s in &f.body {
-        emit_stmt(out, s, 1)?;
+        emit_stmt(out, s, 1, &mut env, f.return_type)?;
     }
     out.push_str("}\n");
     Ok(())
@@ -66,33 +80,69 @@ fn indent(out: &mut String, depth: usize) {
     }
 }
 
-fn emit_stmt(out: &mut String, stmt: &Stmt, depth: usize) -> Result<(), String> {
+fn expr_type(expr: &Expr, env: &HashMap<String, IntType>) -> IntType {
+    match expr {
+        Expr::Int(_) => IntType::U8,
+        Expr::Var(name) => env.get(name).copied().unwrap_or(IntType::U8),
+        Expr::BinOp { left, right, .. } => wider_type(expr_type(left, env), expr_type(right, env)),
+        Expr::Call { .. } => IntType::U8,
+        Expr::Switch { default, .. } => expr_type(default, env),
+        Expr::IntCast { target, .. } => *target,
+    }
+}
+
+fn wider_type(a: IntType, b: IntType) -> IntType {
+    match (a, b) {
+        (IntType::U32, _) | (_, IntType::U32) => IntType::U32,
+        (IntType::U16, _) | (_, IntType::U16) => IntType::U16,
+        _ => IntType::U8,
+    }
+}
+
+fn emit_stmt(
+    out: &mut String,
+    stmt: &Stmt,
+    depth: usize,
+    env: &mut HashMap<String, IntType>,
+    return_type: IntType,
+) -> Result<(), String> {
     indent(out, depth);
     match stmt {
-        Stmt::Let { name, value } => {
-            let _ = writeln!(out, "uint8_t {name} = {};", emit_expr(value)?);
+        Stmt::Let { name, ty, value } => {
+            let _ = writeln!(
+                out,
+                "{} {name} = {};",
+                c_type(*ty),
+                emit_expr(value, env, Some(*ty))?
+            );
+            env.insert(name.clone(), *ty);
         }
         Stmt::Assign { name, value } => {
-            let _ = writeln!(out, "{name} = {};", emit_expr(value)?);
+            let ty = env.get(name).copied().unwrap_or(IntType::U8);
+            let _ = writeln!(out, "{name} = {};", emit_expr(value, env, Some(ty))?);
         }
         Stmt::Return(e) => {
-            let _ = writeln!(out, "return {};", emit_expr(e)?);
+            let _ = writeln!(
+                out,
+                "return {};",
+                emit_expr(e, env, Some(return_type))?
+            );
         }
         Stmt::If {
             cond,
             then_branch,
             else_branch,
         } => {
-            let _ = writeln!(out, "if ({}) {{", emit_expr(cond)?);
+            let _ = writeln!(out, "if ({}) {{", emit_expr(cond, env, None)?);
             for s in then_branch {
-                emit_stmt(out, s, depth + 1)?;
+                emit_stmt(out, s, depth + 1, env, return_type)?;
             }
             indent(out, depth);
             out.push('}');
             if let Some(eb) = else_branch {
                 out.push_str(" else {\n");
                 for s in eb {
-                    emit_stmt(out, s, depth + 1)?;
+                    emit_stmt(out, s, depth + 1, env, return_type)?;
                 }
                 indent(out, depth);
                 out.push('}');
@@ -100,9 +150,9 @@ fn emit_stmt(out: &mut String, stmt: &Stmt, depth: usize) -> Result<(), String> 
             out.push('\n');
         }
         Stmt::While { cond, body } => {
-            let _ = writeln!(out, "while ({}) {{", emit_expr(cond)?);
+            let _ = writeln!(out, "while ({}) {{", emit_expr(cond, env, None)?);
             for s in body {
-                emit_stmt(out, s, depth + 1)?;
+                emit_stmt(out, s, depth + 1, env, return_type)?;
             }
             indent(out, depth);
             out.push_str("}\n");
@@ -120,14 +170,22 @@ fn emit_stmt(out: &mut String, stmt: &Stmt, depth: usize) -> Result<(), String> 
             body,
         } => {
             let var = capture.as_deref().unwrap_or("_zig_for_i");
+            let loop_ty = wider_type(expr_type(start, env), expr_type(end, env));
             let _ = writeln!(
                 out,
-                "for (uint8_t {var} = {}; {var} < {}; {var}++) {{",
-                emit_expr(start)?,
-                emit_expr(end)?
+                "for ({} {var} = {}; {var} < {}; {var}++) {{",
+                c_type(loop_ty),
+                emit_expr(start, env, Some(loop_ty))?,
+                emit_expr(end, env, Some(loop_ty))?
             );
+            if let Some(cap) = capture {
+                env.insert(cap.clone(), loop_ty);
+            }
             for s in body {
-                emit_stmt(out, s, depth + 1)?;
+                emit_stmt(out, s, depth + 1, env, return_type)?;
+            }
+            if let Some(cap) = capture {
+                env.remove(cap);
             }
             indent(out, depth);
             out.push_str("}\n");
@@ -136,37 +194,56 @@ fn emit_stmt(out: &mut String, stmt: &Stmt, depth: usize) -> Result<(), String> 
     Ok(())
 }
 
-fn emit_expr(expr: &Expr) -> Result<String, String> {
+fn emit_expr(
+    expr: &Expr,
+    env: &HashMap<String, IntType>,
+    expected: Option<IntType>,
+) -> Result<String, String> {
     Ok(match expr {
         Expr::Int(n) => n.to_string(),
         Expr::Var(name) => name.clone(),
         Expr::Call { name, args } => {
             let mut parts = Vec::with_capacity(args.len());
             for a in args {
-                parts.push(emit_expr(a)?);
+                parts.push(emit_expr(a, env, None)?);
             }
             format!("{}({})", c_fn(name), parts.join(", "))
         }
         Expr::BinOp { op, left, right } => {
-            format!("({} {} {})", emit_expr(left)?, c_op(*op), emit_expr(right)?)
+            let ty = wider_type(expr_type(left, env), expr_type(right, env));
+            let expected_ty = expected.unwrap_or(ty);
+            format!(
+                "({} {} {})",
+                emit_expr(left, env, Some(expected_ty))?,
+                c_op(*op),
+                emit_expr(right, env, Some(expected_ty))?
+            )
         }
         Expr::Switch {
             scrutinee,
             arms,
             default,
-        } => emit_switch(scrutinee, arms, default)?,
+        } => emit_switch(scrutinee, arms, default, env)?,
+        Expr::IntCast { expr, target } => {
+            format!(
+                "({})({})",
+                c_type(*target),
+                emit_expr(expr, env, None)?
+            )
+        }
     })
 }
 
 fn emit_switch(
     scrutinee: &Expr,
-    arms: &[(u8, Expr)],
+    arms: &[(u32, Expr)],
     default: &Expr,
+    env: &HashMap<String, IntType>,
 ) -> Result<String, String> {
-    let s = emit_expr(scrutinee)?;
-    let mut result = emit_expr(default)?;
+    let s = emit_expr(scrutinee, env, None)?;
+    let mut result = emit_expr(default, env, None)?;
     for (val, arm_expr) in arms.iter().rev() {
-        let arm = emit_expr(arm_expr)?;
+        let arm = emit_expr(arm_expr, env, None)?;
         result = format!("(({s}) == {val} ? ({arm}) : ({result}))");
     }
     Ok(result)

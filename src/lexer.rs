@@ -19,7 +19,8 @@ pub enum TokenKind {
     FatArrow,
     DotDot,
     Ident(String),
-    Int(u8),
+    Int(u32),
+    At,
     Plus,
     Minus,
     Star,
@@ -109,6 +110,7 @@ impl<'a> Lexer<'a> {
             ',' => TokenKind::Comma,
             ':' => TokenKind::Colon,
             ';' => TokenKind::Semicolon,
+            '@' => TokenKind::At,
             '.' => {
                 if self.eat('.') {
                     TokenKind::DotDot
@@ -161,9 +163,9 @@ impl<'a> Lexer<'a> {
             self.pos += 1;
         }
         let text = std::str::from_utf8(&self.input[start..self.pos]).unwrap();
-        let value: u8 = text
+        let value: u32 = text
             .parse()
-            .map_err(|_| format!("integer literal out of u8 range: {text}"))?;
+            .map_err(|_| format!("integer literal out of u32 range: {text}"))?;
         Ok(TokenKind::Int(value))
     }
 
