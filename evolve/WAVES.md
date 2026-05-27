@@ -29,8 +29,13 @@ durable state — stop and resume any time.
 - [x] structfield | oracle/structfield.zig | a struct with integer fields: construct it, read a field, return it (self-authored, real-zig-validated) (landed autonomously vs real zig)
 - [x] arrays | oracle/arrays.zig | self-DISCOVERED gap (planner-generated, real zig=36, zigrun diverged) (landed autonomously vs real zig)
 - [x] optional | oracle/optional.zig | self-discovered atomic gap (real zig=77) (landed autonomously vs real zig)
+- [x] recursion | oracle/recursion.zig | self-discovered atomic gap (real zig=89) (landed autonomously vs real zig)
 
 ## Frontier (pending — each is real Zig that zigrun must learn to match)
+- [ ] for | oracle/pending/for.zig | self-discovered atomic gap (real zig=39)
+- [ ] labeledloop | oracle/pending/labeledloop.zig | self-discovered atomic gap (real zig=26)
+- [ ] arithmetic | oracle/pending/arithmetic.zig | self-discovered atomic gap (real zig=185)
+- [ ] errorunion | oracle/pending/errorunion.zig | self-discovered atomic gap (real zig=42)
 - [ ] enum | oracle/pending/enum.zig | self-discovered atomic gap (real zig=25)
 - [ ] struct | oracle/pending/struct.zig | self-discovered atomic gap (real zig=42)
 - [ ] errors | oracle/pending/errors.zig | self-discovered atomic gap (real zig=120)

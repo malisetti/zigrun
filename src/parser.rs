@@ -207,6 +207,15 @@ impl Parser {
         Ok(stmts)
     }
 
+    /// `if (cond) return x;` (single stmt) or `if (cond) { ... }` (block).
+    fn parse_block_or_stmt(&mut self) -> Result<Vec<Stmt>, String> {
+        if self.check(&TokenKind::LBrace) {
+            self.parse_block()
+        } else {
+            Ok(vec![self.parse_stmt()?])
+        }
+    }
+
     fn parse_stmt(&mut self) -> Result<Stmt, String> {
         match self.peek_kind() {
             TokenKind::Const | TokenKind::Var => {
@@ -384,14 +393,14 @@ impl Parser {
         self.expect(TokenKind::LParen)?;
         let cond = self.parse_expr()?;
         self.expect(TokenKind::RParen)?;
-        let then_branch = self.parse_block()?;
+        let then_branch = self.parse_block_or_stmt()?;
         let else_branch = if self.check(&TokenKind::Else) {
             self.advance();
             if self.check(&TokenKind::If) {
                 self.advance();
                 Some(vec![self.parse_if_stmt()?])
             } else {
-                Some(self.parse_block()?)
+                Some(self.parse_block_or_stmt()?)
             }
         } else {
             None
