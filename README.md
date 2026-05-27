@@ -1,18 +1,23 @@
-# zigrun — a real subset of Zig, interpreted, built in Rust
+# zigrun — a Zig-subset compiler (to C), built in Rust
 
-A from-scratch Zig-subset interpreter in Rust, built by nfltr orchestration and
-gated by an **external oracle**. This crate exists to prove that orchestration +
-a real oracle produces a *working* artifact — not just a green one.
+A from-scratch **compiler** for a subset of Zig, written in Rust. It lowers Zig
+source to C (`src/codegen.rs`), invokes `cc` to produce a native executable, and
+runs it. Built oracle-first and gated by an **external oracle**, to prove that
+the result *works* — not just that tests are green.
+
+Coverage of Zig is tracked honestly in [FEATURES.md](FEATURES.md) (currently on
+the order of ~10–15% of the language surface — this is an evolving project).
 
 ## The contract: `zigrun run FILE.zig`
 
-Evaluates the program; the return value of `pub fn main() u8` becomes the
-process **exit code**. No `std`, no I/O — the exit code IS the observable result.
-That makes the oracle un-fakeable: a program must actually run to the right
-answer.
+Compiles the program to C, builds it with `cc`, and runs the native binary; the
+return value of `pub fn main() u8` becomes the process **exit code**. No `std`,
+no I/O — the exit code IS the observable result, which makes the oracle
+un-fakeable: a program must actually compile and run to the right answer.
 
 ```
-zigrun run oracle/add.zig ; echo $?   # -> 7
+zigrun emit-c oracle/add.zig          # print the generated C
+zigrun run    oracle/add.zig ; echo $?  # compile (C + cc) + run -> 7
 ```
 
 ## The oracle = the definition of "done"
