@@ -16,9 +16,9 @@ durable state — stop and resume any time.
 - [x] bitops | oracle/bitops.zig | bitwise & | ^ << >>
 - [x] forloop | oracle/forloop.zig | Zig range for-loops `for (a..b) |cap| {}` (landed via cursor agent, commit 0484779a; differentially green vs real zig = 7)
 - [x] switch | oracle/switch.zig | Zig integer switch expressions (via fleet worker patch, verified vs real zig = 30)
+- [x] elseif | oracle/elseif.zig | else-if chains `else if (cond) {}` — LANDED AUTONOMOUSLY by evolve/land_wave.py (fleet impl + recover + real-zig gate + merge + push, no operator in the loop), verified vs real zig = 30
 
 ## Frontier (pending — each is real Zig that zigrun must learn to match)
-- [ ] elseif | oracle/pending/elseif.zig | else-if chains `else if (cond) {}`: parser allows `else` to be followed by an if-statement, not only a block. Gate: diff.sh elseif == real zig (30).
 - [ ] inttypes | oracle/pending/inttypes.zig | RE-FOUNDATION: track real types through the pipeline so `u16`/`u32`/`i32` work (not u8-only). Likely needs a value/type model + `@intCast`/`@as`. Operator-architectural — expect a big wave.
 - [ ] print | oracle/pending/print.zig | Minimal `@import("std")` + `std.debug.print` for integers so STDOUT is observable; the differential gate then compares stdout vs real zig, not just exit codes.
 
