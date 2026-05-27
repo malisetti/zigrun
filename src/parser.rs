@@ -1,4 +1,21 @@
-use crate::ast::{BinOp, Expr, MainFn, Program, Stmt};
+// Recursive-descent parser for the zigrun Zig subset.
+//
+// program     := function+
+// function    := "pub"? "fn" ident "(" params? ")" ident block
+// params      := ident ":" ident ("," ident ":" ident)*
+// block       := "{" stmt* "}"
+// stmt        := ("const"|"var") ident ":" ident "=" expr ";"
+//              | ident "=" expr ";"
+//              | "return" expr ";"
+//              | "if" "(" expr ")" block ("else" block)?
+//              | "while" "(" expr ")" block
+// expr        := comparison
+// comparison  := additive ((<|>|<=|>=|==|!=) additive)?
+// additive    := multiplicative ((+|-) multiplicative)*
+// multiplicative := primary ((*|/|%) primary)*
+// primary     := int | ident ("(" args? ")")? | "(" expr ")"
+
+use crate::ast::{BinOp, Expr, Function, Program, Stmt};
 use crate::lexer::{Token, TokenKind};
 
 pub struct Parser {
@@ -12,38 +29,168 @@ impl Parser {
     }
 
     pub fn parse_program(mut self) -> Result<Program, String> {
-        self.expect(TokenKind::Pub)?;
+        let mut functions = Vec::new();
+        while !self.check(&TokenKind::Eof) {
+            functions.push(self.parse_function()?);
+        }
+        if functions.is_empty() {
+            return Err("empty program: no functions".to_string());
+        }
+        Ok(Program { functions })
+    }
+
+    fn parse_function(&mut self) -> Result<Function, String> {
+        if self.check(&TokenKind::Pub) {
+            self.advance();
+        }
         self.expect(TokenKind::Fn)?;
-        self.expect(TokenKind::Main)?;
+        let name = self.expect_ident()?;
         self.expect(TokenKind::LParen)?;
+        let mut params = Vec::new();
+        if !self.check(&TokenKind::RParen) {
+            loop {
+                let p = self.expect_ident()?;
+                self.expect(TokenKind::Colon)?;
+                let _ty = self.expect_ident()?; // type annotation, ignored (u8 subset)
+                params.push(p);
+                if self.check(&TokenKind::Comma) {
+                    self.advance();
+                } else {
+                    break;
+                }
+            }
+        }
         self.expect(TokenKind::RParen)?;
-        self.expect(TokenKind::U8)?;
+        let _ret = self.expect_ident()?; // return type, ignored (u8 subset)
+        let body = self.parse_block()?;
+        Ok(Function { name, params, body })
+    }
+
+    fn parse_block(&mut self) -> Result<Vec<Stmt>, String> {
         self.expect(TokenKind::LBrace)?;
-        let body = self.parse_stmt()?;
+        let mut stmts = Vec::new();
+        while !self.check(&TokenKind::RBrace) && !self.check(&TokenKind::Eof) {
+            stmts.push(self.parse_stmt()?);
+        }
         self.expect(TokenKind::RBrace)?;
-        self.expect(TokenKind::Eof)?;
-        Ok(Program {
-            main: MainFn { body },
-        })
+        Ok(stmts)
     }
 
     fn parse_stmt(&mut self) -> Result<Stmt, String> {
-        self.expect(TokenKind::Return)?;
-        let expr = self.parse_expr()?;
-        self.expect(TokenKind::Semicolon)?;
-        Ok(Stmt::Return(expr))
+        match self.peek_kind() {
+            TokenKind::Const | TokenKind::Var => {
+                self.advance();
+                let name = self.expect_ident()?;
+                self.expect(TokenKind::Colon)?;
+                let _ty = self.expect_ident()?;
+                self.expect(TokenKind::Assign)?;
+                let value = self.parse_expr()?;
+                self.expect(TokenKind::Semicolon)?;
+                Ok(Stmt::Let { name, value })
+            }
+            TokenKind::Return => {
+                self.advance();
+                let value = self.parse_expr()?;
+                self.expect(TokenKind::Semicolon)?;
+                Ok(Stmt::Return(value))
+            }
+            TokenKind::If => {
+                self.advance();
+                self.expect(TokenKind::LParen)?;
+                let cond = self.parse_expr()?;
+                self.expect(TokenKind::RParen)?;
+                let then_branch = self.parse_block()?;
+                let else_branch = if self.check(&TokenKind::Else) {
+                    self.advance();
+                    Some(self.parse_block()?)
+                } else {
+                    None
+                };
+                Ok(Stmt::If {
+                    cond,
+                    then_branch,
+                    else_branch,
+                })
+            }
+            TokenKind::While => {
+                self.advance();
+                self.expect(TokenKind::LParen)?;
+                let cond = self.parse_expr()?;
+                self.expect(TokenKind::RParen)?;
+                let body = self.parse_block()?;
+                Ok(Stmt::While { cond, body })
+            }
+            TokenKind::Ident(name) => {
+                // Statement-leading identifier is an assignment in this subset.
+                self.advance();
+                self.expect(TokenKind::Assign)?;
+                let value = self.parse_expr()?;
+                self.expect(TokenKind::Semicolon)?;
+                Ok(Stmt::Assign { name, value })
+            }
+            other => Err(format!("unexpected token at start of statement: {other:?}")),
+        }
     }
 
     fn parse_expr(&mut self) -> Result<Expr, String> {
-        let left = self.parse_primary()?;
-        if self.check(&TokenKind::Plus) {
+        self.parse_comparison()
+    }
+
+    fn parse_comparison(&mut self) -> Result<Expr, String> {
+        let left = self.parse_additive()?;
+        let op = match self.peek_kind() {
+            TokenKind::Lt => BinOp::Lt,
+            TokenKind::Gt => BinOp::Gt,
+            TokenKind::Le => BinOp::Le,
+            TokenKind::Ge => BinOp::Ge,
+            TokenKind::EqEq => BinOp::Eq,
+            TokenKind::Ne => BinOp::Ne,
+            _ => return Ok(left),
+        };
+        self.advance();
+        let right = self.parse_additive()?;
+        Ok(Expr::BinOp {
+            op,
+            left: Box::new(left),
+            right: Box::new(right),
+        })
+    }
+
+    fn parse_additive(&mut self) -> Result<Expr, String> {
+        let mut left = self.parse_multiplicative()?;
+        loop {
+            let op = match self.peek_kind() {
+                TokenKind::Plus => BinOp::Add,
+                TokenKind::Minus => BinOp::Sub,
+                _ => break,
+            };
             self.advance();
-            let right = self.parse_primary()?;
-            return Ok(Expr::BinOp {
-                op: BinOp::Add,
+            let right = self.parse_multiplicative()?;
+            left = Expr::BinOp {
+                op,
                 left: Box::new(left),
                 right: Box::new(right),
-            });
+            };
+        }
+        Ok(left)
+    }
+
+    fn parse_multiplicative(&mut self) -> Result<Expr, String> {
+        let mut left = self.parse_primary()?;
+        loop {
+            let op = match self.peek_kind() {
+                TokenKind::Star => BinOp::Mul,
+                TokenKind::Slash => BinOp::Div,
+                TokenKind::Percent => BinOp::Mod,
+                _ => break,
+            };
+            self.advance();
+            let right = self.parse_primary()?;
+            left = Expr::BinOp {
+                op,
+                left: Box::new(left),
+                right: Box::new(right),
+            };
         }
         Ok(left)
     }
@@ -54,7 +201,44 @@ impl Parser {
                 self.advance();
                 Ok(Expr::Int(n))
             }
-            other => Err(format!("expected integer literal, found {other:?}")),
+            TokenKind::LParen => {
+                self.advance();
+                let e = self.parse_expr()?;
+                self.expect(TokenKind::RParen)?;
+                Ok(e)
+            }
+            TokenKind::Ident(name) => {
+                self.advance();
+                if self.check(&TokenKind::LParen) {
+                    self.advance();
+                    let mut args = Vec::new();
+                    if !self.check(&TokenKind::RParen) {
+                        loop {
+                            args.push(self.parse_expr()?);
+                            if self.check(&TokenKind::Comma) {
+                                self.advance();
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+                    self.expect(TokenKind::RParen)?;
+                    Ok(Expr::Call { name, args })
+                } else {
+                    Ok(Expr::Var(name))
+                }
+            }
+            other => Err(format!("expected an expression, found {other:?}")),
+        }
+    }
+
+    fn expect_ident(&mut self) -> Result<String, String> {
+        match self.peek_kind() {
+            TokenKind::Ident(name) => {
+                self.advance();
+                Ok(name)
+            }
+            other => Err(format!("expected an identifier, found {other:?}")),
         }
     }
 
@@ -63,11 +247,7 @@ impl Parser {
             self.advance();
             Ok(())
         } else {
-            Err(format!(
-                "expected {:?}, found {:?}",
-                kind,
-                self.peek_kind()
-            ))
+            Err(format!("expected {:?}, found {:?}", kind, self.peek_kind()))
         }
     }
 
@@ -92,20 +272,15 @@ impl Parser {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::Expr;
     use crate::lexer::Lexer;
 
     #[test]
-    fn parses_add_program() {
-        let src = "pub fn main() u8 { return 3 + 4; }";
-        let tokens = Lexer::new(src).tokenize().unwrap();
-        let program = Parser::new(tokens).parse_program().unwrap();
-        match program.main.body {
-            Stmt::Return(Expr::BinOp { op: _, left, right }) => {
-                assert_eq!(*left, Expr::Int(3));
-                assert_eq!(*right, Expr::Int(4));
-            }
-            other => panic!("unexpected stmt: {other:?}"),
-        }
+    fn parses_recursive_function() {
+        let src = "fn fib(n: u8) u8 { if (n < 2) { return n; } return fib(n - 1) + fib(n - 2); } pub fn main() u8 { return fib(10); }";
+        let toks = Lexer::new(src).tokenize().unwrap();
+        let prog = Parser::new(toks).parse_program().unwrap();
+        assert_eq!(prog.functions.len(), 2);
+        assert_eq!(prog.functions[0].name, "fib");
+        assert_eq!(prog.functions[0].params, vec!["n".to_string()]);
     }
 }
