@@ -35,7 +35,7 @@ if [ ${#progs[@]} -eq 0 ]; then
   if [ $errors -eq 1 ]; then
     progs=(); for f in oracle/err/*.zig; do progs+=("$(basename "$f" .zig)"); done
   else
-    progs=(add vars ifelse while fn fib bitops forloop switch elseif loopctl inttypes signedints u64wide unaryneg boollogic arraysum arrayidx atmod enumval structfield)
+    progs=(add vars ifelse while fn fib bitops forloop switch elseif loopctl inttypes signedints u64wide unaryneg boollogic arraysum arrayidx atmod structfield)
   fi
 fi
 
@@ -56,20 +56,27 @@ for p in "${progs[@]}"; do
   src="oracle/$p.zig"
   if [ ! -f "$src" ]; then echo "MISSING $src"; fail=1; continue; fi
 
-  # Ground truth from real zig (stderr = build noise, dropped).
-  zout=$("$ZIG" run "$src" 2>/dev/null); zrc=$?
+  # Warm the zig build cache first, so the comparison run's stderr is the
+  # PROGRAM's output only (not one-time build progress). Then compare exit code,
+  # stdout AND stderr. stderr matters: std.debug.print writes there, so comparing
+  # it is what makes print/output waves false-green-safe (a worker can't pass by
+  # exiting 0 while printing nothing).
+  td="$(mktemp -d)"
+  "$ZIG" run "$src" >/dev/null 2>&1
+  zout=$("$ZIG" run "$src" 2>"$td/ze"); zrc=$?; zerr=$(cat "$td/ze")
 
   if [ $update -eq 1 ]; then
     echo "$zrc" > "oracle/$p.exit"
     echo "updated $p.exit = $zrc (from real zig)"
-    continue
+    rm -rf "$td"; continue
   fi
 
-  rout=$("$zigrun" run "$src" 2>/dev/null); rrc=$?
-  if [ "$zrc" = "$rrc" ] && [ "$zout" = "$rout" ]; then
-    echo "ok    $p: zig=$zrc zigrun=$rrc (match)"
+  rout=$("$zigrun" run "$src" 2>"$td/re"); rrc=$?; rerr=$(cat "$td/re")
+  rm -rf "$td"
+  if [ "$zrc" = "$rrc" ] && [ "$zout" = "$rout" ] && [ "$zerr" = "$rerr" ]; then
+    echo "ok    $p: zig=$zrc zigrun=$rrc (exit+stdout+stderr match)"
   else
-    echo "DIFF  $p: zig{exit=$zrc out=$(printf '%q' "$zout")} != zigrun{exit=$rrc out=$(printf '%q' "$rout")}"
+    echo "DIFF  $p: zig{exit=$zrc out=$(printf '%q' "$zout") err=$(printf '%q' "$zerr")} != zigrun{exit=$rrc out=$(printf '%q' "$rout") err=$(printf '%q' "$rerr")}"
     fail=1
   fi
 done

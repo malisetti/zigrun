@@ -73,18 +73,23 @@ fn compile_c_and_run(c_src: &str, src_path: &str) -> i32 {
     }
 
     let cc = env::var("CC").unwrap_or_else(|_| "cc".to_string());
+    // Capture cc's output (and -w to silence style warnings) instead of inheriting
+    // it, so the C toolchain's diagnostics never leak into the PROGRAM's stderr —
+    // only the compiled program's own output reaches the user (needed for the
+    // stderr-aware differential gate). cc errors are surfaced only on failure.
     let compiled = Command::new(&cc)
         .arg(&cfile)
         .arg("-std=c11")
         .arg("-O0")
+        .arg("-w")
         .arg("-o")
         .arg(&binfile)
-        .status();
+        .output();
     let _ = fs::remove_file(&cfile);
     match compiled {
-        Ok(s) if s.success() => {}
-        Ok(s) => {
-            eprintln!("zigrun: cc failed to compile {src_path} (status {s})");
+        Ok(o) if o.status.success() => {}
+        Ok(o) => {
+            eprintln!("zigrun: cc failed to compile {src_path}:\n{}", String::from_utf8_lossy(&o.stderr));
             let _ = fs::remove_file(&binfile);
             return ERR_EXIT;
         }
