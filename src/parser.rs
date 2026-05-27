@@ -19,13 +19,21 @@
 //              | "switch" "(" expr ")" "{" ( int "=>" expr "," )* "else" "=>" expr "}"
 //              | "@intCast" "(" expr ")"
 
-use crate::ast::{AssignTarget, BinOp, Expr, Function, IntType, Program, Stmt, Type};
+use crate::ast::{
+    AssignTarget, BinOp, EnumDef, Expr, Function, IntType, Program, Stmt, StructDef, SwitchArm,
+    SwitchTag, Type,
+};
 use crate::lexer::{Token, TokenKind};
+use std::collections::HashMap;
 
 pub struct Parser {
     tokens: Vec<Token>,
     pos: usize,
     return_type: Type,
+    enums: HashMap<String, Vec<String>>,
+    structs: HashMap<String, Vec<(String, Type)>>,
+    locals: HashMap<String, Type>,
+    expr_enum_hint: Option<String>,
 }
 
 impl Parser {
@@ -34,18 +42,88 @@ impl Parser {
             tokens,
             pos: 0,
             return_type: Type::Int(IntType::U8),
+            enums: HashMap::new(),
+            structs: HashMap::new(),
+            locals: HashMap::new(),
+            expr_enum_hint: None,
         }
     }
 
     pub fn parse_program(mut self) -> Result<Program, String> {
+        let mut enum_defs = Vec::new();
+        let mut struct_defs = Vec::new();
         let mut functions = Vec::new();
         while !self.check(&TokenKind::Eof) {
-            functions.push(self.parse_function()?);
+            if self.check(&TokenKind::Const) {
+                let decl = self.parse_const_decl()?;
+                match decl {
+                    TopLevelDecl::Enum(e) => enum_defs.push(e),
+                    TopLevelDecl::Struct(s) => struct_defs.push(s),
+                }
+            } else {
+                functions.push(self.parse_function()?);
+            }
         }
         if functions.is_empty() {
             return Err("empty program: no functions".to_string());
         }
-        Ok(Program { functions })
+        Ok(Program {
+            enums: enum_defs,
+            structs: struct_defs,
+            functions,
+        })
+    }
+
+    fn parse_const_decl(&mut self) -> Result<TopLevelDecl, String> {
+        self.expect(TokenKind::Const)?;
+        let name = self.expect_ident()?;
+        self.expect(TokenKind::Assign)?;
+        if self.check(&TokenKind::Struct) {
+            Ok(TopLevelDecl::Struct(self.parse_struct_body(name)?))
+        } else {
+            self.expect(TokenKind::Enum)?;
+            Ok(TopLevelDecl::Enum(self.parse_enum_body(name)?))
+        }
+    }
+
+    fn parse_enum_body(&mut self, name: String) -> Result<EnumDef, String> {
+        self.expect(TokenKind::LBrace)?;
+        let mut variants = Vec::new();
+        while !self.check(&TokenKind::RBrace) && !self.check(&TokenKind::Eof) {
+            variants.push(self.expect_ident()?);
+            if self.check(&TokenKind::Comma) {
+                self.advance();
+            }
+        }
+        self.expect(TokenKind::RBrace)?;
+        self.expect(TokenKind::Semicolon)?;
+        if variants.is_empty() {
+            return Err(format!("enum {name} has no variants"));
+        }
+        self.enums.insert(name.clone(), variants.clone());
+        Ok(EnumDef { name, variants })
+    }
+
+    fn parse_struct_body(&mut self, name: String) -> Result<StructDef, String> {
+        self.expect(TokenKind::Struct)?;
+        self.expect(TokenKind::LBrace)?;
+        let mut fields = Vec::new();
+        while !self.check(&TokenKind::RBrace) && !self.check(&TokenKind::Eof) {
+            let field = self.expect_ident()?;
+            self.expect(TokenKind::Colon)?;
+            let ty = self.parse_type()?;
+            fields.push((field, ty));
+            if self.check(&TokenKind::Comma) {
+                self.advance();
+            }
+        }
+        self.expect(TokenKind::RBrace)?;
+        self.expect(TokenKind::Semicolon)?;
+        if fields.is_empty() {
+            return Err(format!("struct {name} has no fields"));
+        }
+        self.structs.insert(name.clone(), fields.clone());
+        Ok(StructDef { name, fields })
     }
 
     fn parse_function(&mut self) -> Result<Function, String> {
@@ -71,7 +149,11 @@ impl Parser {
         }
         self.expect(TokenKind::RParen)?;
         let return_type = self.parse_type()?;
-        self.return_type = return_type;
+        self.return_type = return_type.clone();
+        self.locals.clear();
+        for (p, ty) in &params {
+            self.locals.insert(p.clone(), ty.clone());
+        }
         let body = self.parse_block()?;
         Ok(Function {
             name,
@@ -109,6 +191,12 @@ impl Parser {
             }
             other => return Err(format!("expected a type, found {other:?}")),
         };
+        if self.enums.contains_key(&name) {
+            return Ok(Type::Enum(name));
+        }
+        if self.structs.contains_key(&name) {
+            return Ok(Type::Struct(name));
+        }
         Type::from_name(&name).ok_or_else(|| format!("unsupported type {name:?}"))
     }
 
@@ -134,9 +222,16 @@ impl Parser {
                     None
                 };
                 self.expect(TokenKind::Assign)?;
+                if let Some(Type::Enum(enum_name)) = &ty {
+                    self.expr_enum_hint = Some(enum_name.clone());
+                }
                 let value = self.parse_expr()?;
-                let ty = ty.unwrap_or_else(|| infer_expr_type(&value));
+                self.expr_enum_hint = None;
+                let ty = ty.unwrap_or_else(|| {
+                    infer_expr_type(&value, &self.enums, &self.structs, &self.locals)
+                });
                 self.expect(TokenKind::Semicolon)?;
+                self.locals.insert(name.clone(), ty.clone());
                 Ok(Stmt::Let { name, ty, value })
             }
             TokenKind::Return => {
@@ -457,20 +552,31 @@ impl Parser {
 
     fn parse_postfix(&mut self) -> Result<Expr, String> {
         let mut expr = self.parse_primary()?;
-        while self.check(&TokenKind::LBracket) {
-            self.advance();
-            let index = self.parse_expr()?;
-            self.expect(TokenKind::RBracket)?;
-            let base = match expr {
-                Expr::Var(name) => name,
-                other => {
-                    return Err(format!("expected variable before index, found {other:?}"))
-                }
-            };
-            expr = Expr::Index {
-                base,
-                index: Box::new(index),
-            };
+        loop {
+            if self.check(&TokenKind::Dot) {
+                self.advance();
+                let field = self.expect_ident()?;
+                expr = Expr::FieldAccess {
+                    base: Box::new(expr),
+                    field,
+                };
+            } else if self.check(&TokenKind::LBracket) {
+                self.advance();
+                let index = self.parse_expr()?;
+                self.expect(TokenKind::RBracket)?;
+                let base = match expr {
+                    Expr::Var(name) => name,
+                    other => {
+                        return Err(format!("expected variable before index, found {other:?}"))
+                    }
+                };
+                expr = Expr::Index {
+                    base,
+                    index: Box::new(index),
+                };
+            } else {
+                break;
+            }
         }
         Ok(expr)
     }
@@ -480,13 +586,22 @@ impl Parser {
             TokenKind::LBracket => self.parse_typed_array_literal(),
             TokenKind::Dot => {
                 self.advance();
-                self.expect(TokenKind::LBrace)?;
-                let elems = self.parse_array_elems()?;
-                self.expect(TokenKind::RBrace)?;
-                Ok(Expr::ArrayLiteral {
-                    elems,
-                    annotated: None,
-                })
+                if self.check(&TokenKind::LBrace) {
+                    self.expect(TokenKind::LBrace)?;
+                    let elems = self.parse_array_elems()?;
+                    self.expect(TokenKind::RBrace)?;
+                    Ok(Expr::ArrayLiteral {
+                        elems,
+                        annotated: None,
+                    })
+                } else {
+                    let variant = self.expect_ident()?;
+                    let enum_name = self
+                        .expr_enum_hint
+                        .clone()
+                        .ok_or_else(|| format!("enum literal .{variant} requires type context"))?;
+                    Ok(Expr::EnumLiteral { enum_name, variant })
+                }
             }
             TokenKind::At => {
                 self.advance();
@@ -545,7 +660,18 @@ impl Parser {
             }
             TokenKind::Ident(name) => {
                 self.advance();
-                if self.check(&TokenKind::LParen) {
+                if self.check(&TokenKind::LBrace) {
+                    if !self.structs.contains_key(&name) {
+                        return Err(format!("unknown struct type {name:?}"));
+                    }
+                    self.advance();
+                    let fields = self.parse_struct_literal_fields()?;
+                    self.expect(TokenKind::RBrace)?;
+                    Ok(Expr::StructLiteral {
+                        struct_name: name,
+                        fields,
+                    })
+                } else if self.check(&TokenKind::LParen) {
                     self.advance();
                     let mut args = Vec::new();
                     if !self.check(&TokenKind::RParen) {
@@ -595,6 +721,25 @@ impl Parser {
         })
     }
 
+    fn parse_struct_literal_fields(&mut self) -> Result<Vec<(String, Expr)>, String> {
+        let mut fields = Vec::new();
+        if !self.check(&TokenKind::RBrace) {
+            loop {
+                self.expect(TokenKind::Dot)?;
+                let field = self.expect_ident()?;
+                self.expect(TokenKind::Assign)?;
+                let value = self.parse_expr()?;
+                fields.push((field, value));
+                if self.check(&TokenKind::Comma) {
+                    self.advance();
+                } else {
+                    break;
+                }
+            }
+        }
+        Ok(fields)
+    }
+
     fn parse_array_elems(&mut self) -> Result<Vec<Expr>, String> {
         let mut elems = Vec::new();
         if !self.check(&TokenKind::RBrace) {
@@ -614,16 +759,46 @@ impl Parser {
         self.advance();
         self.expect(TokenKind::LParen)?;
         let scrutinee = self.parse_expr()?;
+        let scrutinee_enum = self.infer_enum_type(&scrutinee);
         self.expect(TokenKind::RParen)?;
         self.expect(TokenKind::LBrace)?;
         let mut arms = Vec::new();
         let mut default = None;
         while !self.check(&TokenKind::RBrace) && !self.check(&TokenKind::Eof) {
             if self.check(&TokenKind::Else) {
+                if scrutinee_enum.is_some() {
+                    return Err("enum switch cannot have `else` arm".to_string());
+                }
                 self.advance();
                 self.expect(TokenKind::FatArrow)?;
-                default = Some(self.parse_expr()?);
+                default = Some(Box::new(self.parse_expr()?));
+            } else if self.check(&TokenKind::Dot) {
+                let enum_name = scrutinee_enum.clone().ok_or_else(|| {
+                    "enum switch arm requires enum scrutinee".to_string()
+                })?;
+                self.advance();
+                let variant = self.expect_ident()?;
+                if !self
+                    .enums
+                    .get(&enum_name)
+                    .is_some_and(|vs| vs.iter().any(|v| v == &variant))
+                {
+                    return Err(format!(
+                        "unknown variant {variant:?} for enum {enum_name:?}"
+                    ));
+                }
+                self.expect(TokenKind::FatArrow)?;
+                arms.push(SwitchArm {
+                    tag: SwitchTag::EnumVariant {
+                        enum_name: enum_name.clone(),
+                        variant,
+                    },
+                    expr: self.parse_expr()?,
+                });
             } else {
+                if scrutinee_enum.is_some() {
+                    return Err("enum switch requires `.variant =>` arms".to_string());
+                }
                 let val = match self.peek_kind() {
                     TokenKind::Int(n) => {
                         self.advance();
@@ -636,19 +811,31 @@ impl Parser {
                     }
                 };
                 self.expect(TokenKind::FatArrow)?;
-                arms.push((val, self.parse_expr()?));
+                arms.push(SwitchArm {
+                    tag: SwitchTag::Int(val),
+                    expr: self.parse_expr()?,
+                });
             }
             if self.check(&TokenKind::Comma) {
                 self.advance();
             }
         }
         self.expect(TokenKind::RBrace)?;
-        let default = default.ok_or_else(|| "switch missing `else =>` arm".to_string())?;
+        if scrutinee_enum.is_none() && default.is_none() {
+            return Err("switch missing `else =>` arm".to_string());
+        }
         Ok(Expr::Switch {
             scrutinee: Box::new(scrutinee),
             arms,
-            default: Box::new(default),
+            default,
         })
+    }
+
+    fn infer_enum_type(&self, expr: &Expr) -> Option<String> {
+        match expr {
+            Expr::Var(name) => self.locals.get(name).and_then(|t| t.enum_name().map(str::to_string)),
+            _ => None,
+        }
     }
 
     fn expect_ident(&mut self) -> Result<String, String> {
@@ -688,17 +875,25 @@ impl Parser {
     }
 }
 
-fn infer_expr_type(expr: &Expr) -> Type {
+fn infer_expr_type(
+    expr: &Expr,
+    enums: &HashMap<String, Vec<String>>,
+    structs: &HashMap<String, Vec<(String, Type)>>,
+    locals: &HashMap<String, Type>,
+) -> Type {
     match expr {
         Expr::Int(_) => Type::Int(IntType::U8),
         Expr::Bool(_) => Type::Bool,
-        Expr::Var(_) => Type::Int(IntType::U8),
+        Expr::Var(name) => locals
+            .get(name)
+            .cloned()
+            .unwrap_or(Type::Int(IntType::U8)),
         Expr::Call { .. } => Type::Int(IntType::U8),
         Expr::BinOp { op, left, right } => match op {
             BinOp::LogicalAnd | BinOp::LogicalOr => Type::Bool,
             _ => {
-                let lt = infer_expr_type(left);
-                let rt = infer_expr_type(right);
+                let lt = infer_expr_type(left, enums, structs, locals);
+                let rt = infer_expr_type(right, enums, structs, locals);
                 match (lt, rt) {
                     (Type::Int(a), Type::Int(b)) => Type::Int(wider_int_type(a, b)),
                     (Type::Int(a), _) => Type::Int(a),
@@ -707,11 +902,15 @@ fn infer_expr_type(expr: &Expr) -> Type {
                 }
             }
         },
-        Expr::Switch { default, .. } => infer_expr_type(default),
+        Expr::Switch { default, .. } => default
+            .as_ref()
+            .map(|d| infer_expr_type(d, enums, structs, locals))
+            .unwrap_or(Type::Int(IntType::U8)),
+        Expr::EnumLiteral { enum_name, .. } => Type::Enum(enum_name.clone()),
         Expr::IntCast { target, .. } => Type::Int(*target),
         Expr::Mod { left, right } | Expr::Rem { left, right } => {
-            let lt = infer_expr_type(left);
-            let rt = infer_expr_type(right);
+            let lt = infer_expr_type(left, enums, structs, locals);
+            let rt = infer_expr_type(right, enums, structs, locals);
             match (lt, rt) {
                 (Type::Int(a), Type::Int(b)) => Type::Int(wider_int_type(a, b)),
                 (Type::Int(a), _) => Type::Int(a),
@@ -719,7 +918,7 @@ fn infer_expr_type(expr: &Expr) -> Type {
                 _ => Type::Int(IntType::U8),
             }
         }
-        Expr::UnaryNeg(inner) => infer_expr_type(inner),
+        Expr::UnaryNeg(inner) => infer_expr_type(inner, enums, structs, locals),
         Expr::UnaryNot(_) => Type::Bool,
         Expr::ArrayLiteral { elems, annotated } => {
             if let Some((len, elem)) = annotated {
@@ -728,7 +927,7 @@ fn infer_expr_type(expr: &Expr) -> Type {
                     elem: *elem,
                 }
             } else if let Some(first) = elems.first() {
-                let elem = infer_expr_type(first)
+                let elem = infer_expr_type(first, enums, structs, locals)
                     .int_type()
                     .unwrap_or(IntType::U8);
                 Type::Array {
@@ -743,7 +942,42 @@ fn infer_expr_type(expr: &Expr) -> Type {
             }
         }
         Expr::Index { base: _, index: _ } => Type::Int(IntType::U8),
+        Expr::StructLiteral { struct_name, .. } => Type::Struct(struct_name.clone()),
+        Expr::FieldAccess { base, field } => field_type(base, field, enums, structs, locals),
     }
+}
+
+fn field_type(
+    base: &Expr,
+    field: &str,
+    _enums: &HashMap<String, Vec<String>>,
+    structs: &HashMap<String, Vec<(String, Type)>>,
+    locals: &HashMap<String, Type>,
+) -> Type {
+    let base_ty = match base {
+        Expr::Var(name) => locals.get(name).cloned(),
+        Expr::FieldAccess {
+            base,
+            field: parent_field,
+        } => Some(field_type(base, parent_field, _enums, structs, locals)),
+        Expr::StructLiteral { struct_name, .. } => Some(Type::Struct(struct_name.clone())),
+        _ => None,
+    };
+    base_ty
+        .and_then(|t| t.struct_name().map(str::to_string))
+        .and_then(|sn| structs.get(&sn))
+        .and_then(|fields| {
+            fields
+                .iter()
+                .find(|(f, _)| f == field)
+                .map(|(_, ty)| ty.clone())
+        })
+        .unwrap_or(Type::Int(IntType::U8))
+}
+
+enum TopLevelDecl {
+    Enum(EnumDef),
+    Struct(StructDef),
 }
 
 fn wider_int_type(a: IntType, b: IntType) -> IntType {

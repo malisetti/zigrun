@@ -6,7 +6,10 @@
 // u8 semantics here are C's `uint8_t` (wrapping), a known divergence from Zig's
 // checked arithmetic — tracked in FEATURES.md.
 
-use crate::ast::{AssignTarget, BinOp, Expr, Function, IntType, Program, Stmt, Type};
+use crate::ast::{
+    AssignTarget, BinOp, EnumDef, Expr, Function, IntType, Program, Stmt, StructDef, SwitchArm,
+    SwitchTag, Type,
+};
 use std::collections::HashMap;
 use std::fmt::Write;
 
@@ -16,6 +19,16 @@ pub fn emit_c(program: &Program) -> Result<String, String> {
     }
     let mut out = String::new();
     out.push_str("#include <stdint.h>\n#include <stdbool.h>\n#include <stddef.h>\n\n");
+
+    for e in &program.enums {
+        emit_enum_def(&mut out, e)?;
+        out.push('\n');
+    }
+
+    for s in &program.structs {
+        emit_struct_def(&mut out, s)?;
+        out.push('\n');
+    }
 
     for f in &program.functions {
         let _ = writeln!(out, "{};", prototype(f));
@@ -35,7 +48,29 @@ fn c_fn(name: &str) -> String {
     format!("zig_{name}")
 }
 
-fn c_type(ty: Type) -> String {
+fn emit_struct_def(out: &mut String, s: &StructDef) -> Result<(), String> {
+    let _ = writeln!(out, "typedef struct {{");
+    for (field, ty) in &s.fields {
+        let _ = writeln!(out, "    {} {};", c_type(ty), field);
+    }
+    let _ = writeln!(out, "}} {};", s.name);
+    Ok(())
+}
+
+fn emit_enum_def(out: &mut String, e: &EnumDef) -> Result<(), String> {
+    let _ = writeln!(out, "typedef enum {{");
+    for v in &e.variants {
+        let _ = writeln!(out, "    {}_{v},", e.name);
+    }
+    let _ = writeln!(out, "}} {};", e.name);
+    Ok(())
+}
+
+fn c_enum_variant(enum_name: &str, variant: &str) -> String {
+    format!("{enum_name}_{variant}")
+}
+
+fn c_type(ty: &Type) -> String {
     match ty {
         Type::Bool => "bool".to_string(),
         Type::Int(IntType::U8) => "uint8_t".to_string(),
@@ -47,18 +82,21 @@ fn c_type(ty: Type) -> String {
         Type::Int(IntType::I32) => "int32_t".to_string(),
         Type::Int(IntType::I64) => "int64_t".to_string(),
         Type::Array { .. } => "uint8_t".to_string(),
+        Type::Enum(name) => name.clone(),
+        Type::Struct(name) => name.clone(),
     }
 }
 
-fn c_var_decl(name: &str, ty: Type) -> String {
+fn c_var_decl(name: &str, ty: &Type) -> String {
     match ty {
-        Type::Array { len, elem } => format!("{} {}[{}]", c_int_type(elem), name, len),
+        Type::Array { len, elem } => format!("{} {}[{}]", c_int_type(*elem), name, len),
+        Type::Struct(_) => format!("{} {name}", c_type(ty)),
         other => format!("{} {name}", c_type(other)),
     }
 }
 
 fn c_int_type(ty: IntType) -> String {
-    c_type(Type::Int(ty))
+    c_type(&Type::Int(ty))
 }
 
 fn prototype(f: &Function) -> String {
@@ -67,13 +105,13 @@ fn prototype(f: &Function) -> String {
     } else {
         f.params
             .iter()
-            .map(|(p, ty)| format!("{} {p}", c_type(*ty)))
+            .map(|(p, ty)| format!("{} {p}", c_type(ty)))
             .collect::<Vec<_>>()
             .join(", ")
     };
     format!(
         "{} {}({})",
-        c_type(f.return_type),
+        c_type(&f.return_type),
         c_fn(&f.name),
         params
     )
@@ -83,10 +121,10 @@ fn emit_function(out: &mut String, f: &Function) -> Result<(), String> {
     let _ = writeln!(out, "{} {{", prototype(f));
     let mut env: HashMap<String, Type> = HashMap::new();
     for (name, ty) in &f.params {
-        env.insert(name.clone(), *ty);
+        env.insert(name.clone(), ty.clone());
     }
     for s in &f.body {
-        emit_stmt(out, s, 1, &mut env, f.return_type)?;
+        emit_stmt(out, s, 1, &mut env, &f.return_type)?;
     }
     out.push_str("}\n");
     Ok(())
@@ -102,13 +140,21 @@ fn expr_type(expr: &Expr, env: &HashMap<String, Type>) -> Type {
     match expr {
         Expr::Int(_) => Type::Int(IntType::U8),
         Expr::Bool(_) => Type::Bool,
-        Expr::Var(name) => env.get(name).copied().unwrap_or(Type::Int(IntType::U8)),
+        Expr::Var(name) => env
+            .get(name)
+            .cloned()
+            .unwrap_or(Type::Int(IntType::U8)),
+        Expr::EnumLiteral { enum_name, variant: _ } => Type::Enum(enum_name.clone()),
         Expr::BinOp { op, left, right } => match op {
             BinOp::LogicalAnd | BinOp::LogicalOr => Type::Bool,
             _ => combine_types(expr_type(left, env), expr_type(right, env)),
         },
         Expr::Call { .. } => Type::Int(IntType::U8),
-        Expr::Switch { default, .. } => expr_type(default, env),
+        Expr::Switch { default, arms, .. } => default
+            .as_ref()
+            .map(|d| expr_type(d, env))
+            .or_else(|| arms.last().map(|a| expr_type(&a.expr, env)))
+            .unwrap_or(Type::Int(IntType::U8)),
         Expr::IntCast { target, .. } => Type::Int(*target),
         Expr::Mod { left, right } | Expr::Rem { left, right } => {
             combine_types(expr_type(left, env), expr_type(right, env))
@@ -119,7 +165,9 @@ fn expr_type(expr: &Expr, env: &HashMap<String, Type>) -> Type {
             if let Some((len, elem)) = annotated {
                 Type::Array { len: *len, elem: *elem }
             } else if let Some(first) = elems.first() {
-                let elem = expr_type(first, env).int_type().unwrap_or(IntType::U8);
+                let elem = expr_type(first, env)
+                    .int_type()
+                    .unwrap_or(IntType::U8);
                 Type::Array {
                     len: elems.len(),
                     elem,
@@ -136,7 +184,21 @@ fn expr_type(expr: &Expr, env: &HashMap<String, Type>) -> Type {
                 .and_then(|t| t.array_elem().map(|elem| Type::Int(elem)))
                 .unwrap_or(Type::Int(IntType::U8))
         }
+        Expr::StructLiteral { struct_name, .. } => Type::Struct(struct_name.clone()),
+        Expr::FieldAccess { base, field } => field_expr_type(base, field, env),
     }
+}
+
+fn field_expr_type(base: &Expr, field: &str, env: &HashMap<String, Type>) -> Type {
+    let base_ty = match base {
+        Expr::Var(name) => env.get(name).cloned(),
+        Expr::FieldAccess { base, field: parent } => Some(field_expr_type(base, parent, env)),
+        Expr::StructLiteral { struct_name, .. } => Some(Type::Struct(struct_name.clone())),
+        _ => None,
+    };
+    // Field types are resolved from struct layout at emit time; use u8 fallback for inference.
+    let _ = (base_ty, field);
+    Type::Int(IntType::U8)
 }
 
 fn combine_types(a: Type, b: Type) -> Type {
@@ -151,6 +213,9 @@ fn combine_types(a: Type, b: Type) -> Type {
             }
         }
         (Type::Array { elem, .. }, _) | (_, Type::Array { elem, .. }) => Type::Int(elem),
+        (Type::Enum(a), Type::Enum(b)) if a == b => Type::Enum(a),
+        (Type::Enum(a), _) | (_, Type::Enum(a)) => Type::Enum(a),
+        (Type::Struct(a), Type::Struct(b)) if a == b => Type::Struct(a),
         _ => Type::Bool,
     }
 }
@@ -176,7 +241,7 @@ fn emit_stmt(
     stmt: &Stmt,
     depth: usize,
     env: &mut HashMap<String, Type>,
-    return_type: Type,
+    return_type: &Type,
 ) -> Result<(), String> {
     indent(out, depth);
     match stmt {
@@ -184,10 +249,10 @@ fn emit_stmt(
             let _ = writeln!(
                 out,
                 "{} = {};",
-                c_var_decl(name, *ty),
-                emit_expr(value, env, Some(*ty))?
+                c_var_decl(name, ty),
+                emit_expr(value, env, Some(ty))?
             );
-            env.insert(name.clone(), *ty);
+            env.insert(name.clone(), ty.clone());
         }
         Stmt::Assign { target, value } => {
             let ty = assign_target_type(target, env);
@@ -195,7 +260,7 @@ fn emit_stmt(
             let _ = writeln!(
                 out,
                 "{lhs} = {};",
-                emit_expr(value, env, Some(ty))?
+                emit_expr(value, env, Some(&ty))?
             );
         }
         Stmt::Return(e) => {
@@ -250,12 +315,13 @@ fn emit_stmt(
             let loop_ty = combine_types(expr_type(start, env), expr_type(end, env))
                 .int_type()
                 .unwrap_or(IntType::U8);
+            let loop_ty_type = Type::Int(loop_ty);
             let _ = writeln!(
                 out,
                 "for ({} {var} = {}; {var} < {}; {var}++) {{",
                 c_int_type(loop_ty),
-                emit_expr(start, env, Some(Type::Int(loop_ty)))?,
-                emit_expr(end, env, Some(Type::Int(loop_ty)))?
+                emit_expr(start, env, Some(&loop_ty_type))?,
+                emit_expr(end, env, Some(&loop_ty_type))?
             );
             if let Some(cap) = capture {
                 env.insert(cap.clone(), Type::Int(loop_ty));
@@ -276,7 +342,7 @@ fn emit_stmt(
         } => {
             let arr_ty = env
                 .get(array)
-                .copied()
+                .cloned()
                 .ok_or_else(|| format!("unknown array variable {array}"))?;
             let (len, elem) = match arr_ty {
                 Type::Array { len, elem } => (len, elem),
@@ -308,7 +374,10 @@ fn emit_stmt(
 
 fn assign_target_type(target: &AssignTarget, env: &HashMap<String, Type>) -> Type {
     match target {
-        AssignTarget::Name(name) => env.get(name).copied().unwrap_or(Type::Int(IntType::U8)),
+        AssignTarget::Name(name) => env
+            .get(name)
+            .cloned()
+            .unwrap_or(Type::Int(IntType::U8)),
         AssignTarget::Index { base, .. } => env
             .get(base)
             .and_then(|t| t.array_elem().map(|elem| Type::Int(elem)))
@@ -331,7 +400,7 @@ fn emit_assign_target(
 fn emit_expr(
     expr: &Expr,
     env: &HashMap<String, Type>,
-    expected: Option<Type>,
+    expected: Option<&Type>,
 ) -> Result<String, String> {
     Ok(match expr {
         Expr::Int(n) => {
@@ -349,6 +418,7 @@ fn emit_expr(
             }
         }
         Expr::Var(name) => name.clone(),
+        Expr::EnumLiteral { enum_name, variant } => c_enum_variant(enum_name, variant),
         Expr::Call { name, args } => {
             let mut parts = Vec::with_capacity(args.len());
             for a in args {
@@ -360,18 +430,18 @@ fn emit_expr(
             if matches!(op, BinOp::LogicalAnd | BinOp::LogicalOr) {
                 format!(
                     "({} {} {})",
-                    emit_expr(left, env, Some(Type::Bool))?,
+                    emit_expr(left, env, Some(&Type::Bool))?,
                     c_op(*op),
-                    emit_expr(right, env, Some(Type::Bool))?
+                    emit_expr(right, env, Some(&Type::Bool))?
                 )
             } else {
                 let ty = combine_types(expr_type(left, env), expr_type(right, env));
-                let expected_ty = expected.unwrap_or(ty);
+                let expected_ty = expected.cloned().unwrap_or(ty);
                 format!(
                     "({} {} {})",
-                    emit_expr(left, env, Some(expected_ty))?,
+                    emit_expr(left, env, Some(&expected_ty))?,
                     c_op(*op),
-                    emit_expr(right, env, Some(expected_ty))?
+                    emit_expr(right, env, Some(&expected_ty))?
                 )
             }
         }
@@ -394,16 +464,16 @@ fn emit_expr(
             emit_mod_rem(left, right, env, expected, false)?
         }
         Expr::UnaryNeg(operand) => {
-            let ty = expected.unwrap_or(expr_type(operand, env));
+            let ty = expected.cloned().unwrap_or_else(|| expr_type(operand, env));
             format!(
                 "(-({}))",
-                emit_expr(operand, env, Some(ty))?
+                emit_expr(operand, env, Some(&ty))?
             )
         }
         Expr::UnaryNot(operand) => {
             format!(
                 "(!({}))",
-                emit_expr(operand, env, Some(Type::Bool))?
+                emit_expr(operand, env, Some(&Type::Bool))?
             )
         }
         Expr::ArrayLiteral { elems, annotated } => {
@@ -418,14 +488,30 @@ fn emit_expr(
                 .unwrap_or(IntType::U8);
             let parts: Result<Vec<_>, _> = elems
                 .iter()
-                .map(|e| emit_expr(e, env, Some(Type::Int(elem_ty))))
+                .map(|e| emit_expr(e, env, Some(&Type::Int(elem_ty))))
                 .collect();
             format!("{{ {} }}", parts?.join(", "))
         }
         Expr::Index { base, index } => {
             format!(
                 "{base}[{}]",
-                emit_expr(index, env, Some(Type::Int(IntType::U32)))?
+                emit_expr(index, env, Some(&Type::Int(IntType::U32)))?
+            )
+        }
+        Expr::StructLiteral { struct_name, fields } => {
+            let mut parts = Vec::new();
+            for (field, value) in fields {
+                parts.push(format!(
+                    ".{field} = {}",
+                    emit_expr(value, env, None)?
+                ));
+            }
+            format!("({struct_name}){{ {} }}", parts.join(", "))
+        }
+        Expr::FieldAccess { base, field } => {
+            format!(
+                "({}).{field}",
+                emit_expr(base, env, None)?
             )
         }
     })
@@ -435,18 +521,19 @@ fn emit_mod_rem(
     left: &Expr,
     right: &Expr,
     env: &HashMap<String, Type>,
-    expected: Option<Type>,
+    expected: Option<&Type>,
     is_mod: bool,
 ) -> Result<String, String> {
     let ty = combine_types(expr_type(left, env), expr_type(right, env));
-    let int_ty = expected
+    let it = expected
         .and_then(|t| t.int_type())
         .or_else(|| ty.int_type())
         .unwrap_or(IntType::U8);
-    let ct = c_int_type(int_ty);
-    let l = emit_expr(left, env, Some(Type::Int(int_ty)))?;
-    let r = emit_expr(right, env, Some(Type::Int(int_ty)))?;
-    if int_ty.is_signed() {
+    let ct = c_int_type(it);
+    let int_type = Type::Int(it);
+    let l = emit_expr(left, env, Some(&int_type))?;
+    let r = emit_expr(right, env, Some(&int_type))?;
+    if it.is_signed() {
         if is_mod {
             Ok(format!(
                 "(({ct} __a = ({l}), {ct} __b = ({r}), {ct} __m = __a % __b, \
@@ -462,15 +549,35 @@ fn emit_mod_rem(
 
 fn emit_switch(
     scrutinee: &Expr,
-    arms: &[(u64, Expr)],
-    default: &Expr,
+    arms: &[SwitchArm],
+    default: &Option<Box<Expr>>,
     env: &HashMap<String, Type>,
 ) -> Result<String, String> {
+    if arms.is_empty() {
+        return Err("switch has no arms".to_string());
+    }
     let s = emit_expr(scrutinee, env, None)?;
-    let mut result = emit_expr(default, env, None)?;
-    for (val, arm_expr) in arms.iter().rev() {
-        let arm = emit_expr(arm_expr, env, None)?;
-        result = format!("(({s}) == {val} ? ({arm}) : ({result}))");
+    let scrutinee_ty = expr_type(scrutinee, env);
+    let mut result = match default {
+        Some(d) => emit_expr(d, env, None)?,
+        None => emit_expr(&arms[arms.len() - 1].expr, env, None)?,
+    };
+    let arm_iter: Box<dyn Iterator<Item = &SwitchArm>> = match default {
+        Some(_) => Box::new(arms.iter().rev()),
+        None => Box::new(arms.iter().rev().skip(1)),
+    };
+    for arm in arm_iter {
+        let arm_expr = emit_expr(&arm.expr, env, None)?;
+        result = match (&scrutinee_ty, &arm.tag) {
+            (Type::Enum(enum_name), SwitchTag::EnumVariant { variant, .. }) => {
+                let tag = c_enum_variant(enum_name, variant);
+                format!("(({s}) == {tag} ? ({arm_expr}) : ({result}))")
+            }
+            (_, SwitchTag::Int(val)) => {
+                format!("(({s}) == {val} ? ({arm_expr}) : ({result}))")
+            }
+            _ => return Err("switch arm tag does not match scrutinee type".to_string()),
+        };
     }
     Ok(result)
 }

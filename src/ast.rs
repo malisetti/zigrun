@@ -2,11 +2,13 @@
 // cover let (const/var), assignment, return, if/else, and while; expressions
 // cover integer literals, variable refs, function calls, and binary operators.
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Type {
     Bool,
     Int(IntType),
     Array { len: usize, elem: IntType },
+    Enum(String),
+    Struct(String),
 }
 
 impl Type {
@@ -17,28 +19,43 @@ impl Type {
         IntType::from_name(name).map(Type::Int)
     }
 
-    pub fn int_type(self) -> Option<IntType> {
+    pub fn int_type(&self) -> Option<IntType> {
         match self {
             Type::Bool => None,
-            Type::Int(t) => Some(t),
-            Type::Array { elem, .. } => Some(elem),
+            Type::Int(t) => Some(*t),
+            Type::Array { elem, .. } => Some(*elem),
+            Type::Enum(_) => None,
+            Type::Struct(_) => None,
         }
     }
 
-    pub fn array_elem(self) -> Option<IntType> {
+    pub fn struct_name(&self) -> Option<&str> {
         match self {
-            Type::Array { elem, .. } => Some(elem),
+            Type::Struct(name) => Some(name),
             _ => None,
         }
     }
 
-    pub fn array_len(self) -> Option<usize> {
+    pub fn array_elem(&self) -> Option<IntType> {
         match self {
-            Type::Array { len, .. } => Some(len),
+            Type::Array { elem, .. } => Some(*elem),
             _ => None,
         }
     }
 
+    pub fn array_len(&self) -> Option<usize> {
+        match self {
+            Type::Array { len, .. } => Some(*len),
+            _ => None,
+        }
+    }
+
+    pub fn enum_name(&self) -> Option<&str> {
+        match self {
+            Type::Enum(name) => Some(name),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,7 +101,21 @@ impl IntType {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnumDef {
+    pub name: String,
+    pub variants: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StructDef {
+    pub name: String,
+    pub fields: Vec<(String, Type)>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Program {
+    pub enums: Vec<EnumDef>,
+    pub structs: Vec<StructDef>,
     pub functions: Vec<Function>,
 }
 
@@ -134,6 +165,21 @@ pub enum AssignTarget {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SwitchTag {
+    Int(u64),
+    EnumVariant {
+        enum_name: String,
+        variant: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitchArm {
+    pub tag: SwitchTag,
+    pub expr: Expr,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Expr {
     Int(i64),
     Bool(bool),
@@ -146,8 +192,12 @@ pub enum Expr {
     },
     Switch {
         scrutinee: Box<Expr>,
-        arms: Vec<(u64, Expr)>,
-        default: Box<Expr>,
+        arms: Vec<SwitchArm>,
+        default: Option<Box<Expr>>,
+    },
+    EnumLiteral {
+        enum_name: String,
+        variant: String,
     },
     IntCast {
         expr: Box<Expr>,
@@ -171,6 +221,14 @@ pub enum Expr {
     Index {
         base: String,
         index: Box<Expr>,
+    },
+    StructLiteral {
+        struct_name: String,
+        fields: Vec<(String, Expr)>,
+    },
+    FieldAccess {
+        base: Box<Expr>,
+        field: String,
     },
 }
 
