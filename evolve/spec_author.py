@@ -22,7 +22,12 @@ ATTEMPTED = ZIGRUN / "evolve" / ".authored_features"
 
 
 def sh(cmd, timeout=120, cwd=None):
-    return subprocess.run(cmd, text=True, capture_output=True, timeout=timeout, cwd=cwd)
+    # Catch timeouts (a slow `claude` call must not crash the whole self-driving
+    # loop — which the live run did, mis-read by the driver as "nothing to author").
+    try:
+        return subprocess.run(cmd, text=True, capture_output=True, timeout=timeout, cwd=cwd)
+    except subprocess.TimeoutExpired as e:
+        return subprocess.CompletedProcess(cmd, 124, (e.stdout or ""), "TIMEOUT")
 
 
 def ensure_zig():
@@ -34,7 +39,7 @@ def ensure_zig():
 def gen_batch():
     """Ask the planner LLM for diverse candidate programs. Returns [(feature, src)]."""
     prompt = (
-        "Generate 8 SMALL, DIVERSE, valid Zig 0.15 programs, each exercising a DIFFERENT "
+        "Generate 5 SMALL, DIVERSE, valid Zig 0.15 programs, each exercising a DIFFERENT "
         "language feature — pick a varied spread from: fixed/multi-dim arrays, slices, "
         "structs (incl. nested, methods), enums, tagged unions, optionals `?T`, error unions "
         "`!T` with try/catch, switch on ranges, defer, labeled loops/breaks, packed structs, "
@@ -45,7 +50,7 @@ def gen_batch():
         "For EACH program, output exactly a line `FEATURE: <one_word_name>` immediately followed "
         "by the program in a ```zig code fence. Nothing else between them."
     )
-    out = sh(["claude", "-p", prompt], timeout=240).stdout or ""
+    out = sh(["claude", "-p", prompt], timeout=300).stdout or ""
     pairs = []
     for m in re.finditer(r"FEATURE:\s*([A-Za-z0-9_]+)\s*```(?:zig)?\s*\n(.*?)```", out, re.S):
         pairs.append((m.group(1).strip().lower(), m.group(2).strip() + "\n"))

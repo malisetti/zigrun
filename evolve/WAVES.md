@@ -30,7 +30,6 @@ durable state — stop and resume any time.
 - [x] arrays | oracle/arrays.zig | self-DISCOVERED gap (planner-generated, real zig=36, zigrun diverged) (landed autonomously vs real zig)
 
 ## Frontier (pending — each is real Zig that zigrun must learn to match)
-- [ ] enumval | oracle/pending/enumval.zig | an enum with a few variants and a switch returning a number per variant (self-authored, real-zig-validated)
 - [ ] print | (spec deferred) | NEEDS ORACLE WORK FIRST: `std.debug.print` writes to STDERR but diff.sh compares stdout — gate must observe stderr (or use std.io stdout writer) before this wave is false-green-safe.
 
 ## How a wave lands
