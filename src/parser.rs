@@ -7,7 +7,7 @@
 // stmt        := ("const"|"var") ident ":" ident "=" expr ";"
 //              | ident "=" expr ";"
 //              | "return" expr ";"
-//              | "if" "(" expr ")" block ("else" block)?
+//              | "if" "(" expr ")" block ("else" (block | "if" ...))?
 //              | "while" "(" expr ")" block
 //              | "for" "(" expr ".." expr ")" "|" ident "|" block
 // expr        := comparison
@@ -98,21 +98,7 @@ impl Parser {
             }
             TokenKind::If => {
                 self.advance();
-                self.expect(TokenKind::LParen)?;
-                let cond = self.parse_expr()?;
-                self.expect(TokenKind::RParen)?;
-                let then_branch = self.parse_block()?;
-                let else_branch = if self.check(&TokenKind::Else) {
-                    self.advance();
-                    Some(self.parse_block()?)
-                } else {
-                    None
-                };
-                Ok(Stmt::If {
-                    cond,
-                    then_branch,
-                    else_branch,
-                })
+                self.parse_if_stmt()
             }
             TokenKind::While => {
                 self.advance();
@@ -162,6 +148,29 @@ impl Parser {
             }
             other => Err(format!("unexpected token at start of statement: {other:?}")),
         }
+    }
+
+    fn parse_if_stmt(&mut self) -> Result<Stmt, String> {
+        self.expect(TokenKind::LParen)?;
+        let cond = self.parse_expr()?;
+        self.expect(TokenKind::RParen)?;
+        let then_branch = self.parse_block()?;
+        let else_branch = if self.check(&TokenKind::Else) {
+            self.advance();
+            if self.check(&TokenKind::If) {
+                self.advance();
+                Some(vec![self.parse_if_stmt()?])
+            } else {
+                Some(self.parse_block()?)
+            }
+        } else {
+            None
+        };
+        Ok(Stmt::If {
+            cond,
+            then_branch,
+            else_branch,
+        })
     }
 
     fn parse_expr(&mut self) -> Result<Expr, String> {
