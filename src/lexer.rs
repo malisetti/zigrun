@@ -13,6 +13,8 @@ pub enum TokenKind {
     Else,
     While,
     For,
+    Break,
+    Continue,
     Switch,
     FatArrow,
     DotDot,
@@ -186,6 +188,8 @@ impl<'a> Lexer<'a> {
             "else" => TokenKind::Else,
             "while" => TokenKind::While,
             "for" => TokenKind::For,
+            "break" => TokenKind::Break,
+            "continue" => TokenKind::Continue,
             "switch" => TokenKind::Switch,
             other => TokenKind::Ident(other.to_string()),
         }

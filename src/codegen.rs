@@ -107,6 +107,12 @@ fn emit_stmt(out: &mut String, stmt: &Stmt, depth: usize) -> Result<(), String> 
             indent(out, depth);
             out.push_str("}\n");
         }
+        Stmt::Break => {
+            let _ = writeln!(out, "break;");
+        }
+        Stmt::Continue => {
+            let _ = writeln!(out, "continue;");
+        }
         Stmt::For {
             capture,
             start,

@@ -26,6 +26,8 @@ pub enum Stmt {
         else_branch: Option<Vec<Stmt>>,
     },
     While { cond: Expr, body: Vec<Stmt> },
+    Break,
+    Continue,
     For {
         capture: Option<String>,
         start: Expr,

@@ -108,6 +108,16 @@ impl Parser {
                 let body = self.parse_block()?;
                 Ok(Stmt::While { cond, body })
             }
+            TokenKind::Break => {
+                self.advance();
+                self.expect(TokenKind::Semicolon)?;
+                Ok(Stmt::Break)
+            }
+            TokenKind::Continue => {
+                self.advance();
+                self.expect(TokenKind::Semicolon)?;
+                Ok(Stmt::Continue)
+            }
             TokenKind::For => {
                 self.advance();
                 self.expect(TokenKind::LParen)?;
