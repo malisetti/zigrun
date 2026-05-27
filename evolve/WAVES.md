@@ -20,9 +20,9 @@ durable state — stop and resume any time.
 - [x] loopctl | oracle/loopctl.zig | `break` and `continue` in loops: add Break/Continue statements (lexer keywords + parser + codegen lower to C break/continue). Gate: diff.sh loopctl == real zig (18). (landed autonomously vs real zig)
 - [x] inttypes | oracle/inttypes.zig | RE-FOUNDATION: track real types through the pipeline so `u16`/`u32`/`i32` work (not u8-only). Likely needs a value/type model + `@intCast`/`@as`. Operator-architectural — expect a big wave. (landed autonomously vs real zig)
 - [x] signedints | oracle/signedints.zig | signed integer types `i8`..`i64` — the differential probe found zigrun ERRORS on i32 where real zig works (e.g. `-5 + 8 = 3`). Extend the type model to signed widths. (landed autonomously vs real zig)
+- [x] u64wide | oracle/u64wide.zig | `u64` integer width + `@intCast` — extend the int type model to 64-bit. (landed autonomously vs real zig)
 
 ## Frontier (pending — each is real Zig that zigrun must learn to match)
-- [ ] u64wide | oracle/pending/u64wide.zig | `u64` integer width + `@intCast` — extend the int type model to 64-bit.
 - [ ] unaryneg | oracle/pending/unaryneg.zig | unary minus `-x` on signed integers.
 - [ ] boollogic | oracle/pending/boollogic.zig | `bool` type + `true`/`false` literals + logical `and`/`or`/`!`.
 - [ ] print | (spec deferred) | NEEDS ORACLE WORK FIRST: `std.debug.print` writes to STDERR but diff.sh compares stdout — gate must observe stderr (or use std.io stdout writer) before this wave is false-green-safe.

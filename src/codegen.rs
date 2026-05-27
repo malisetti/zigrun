@@ -40,6 +40,7 @@ fn c_type(ty: IntType) -> &'static str {
         IntType::U8 => "uint8_t",
         IntType::U16 => "uint16_t",
         IntType::U32 => "uint32_t",
+        IntType::U64 => "uint64_t",
         IntType::I8 => "int8_t",
         IntType::I16 => "int16_t",
         IntType::I32 => "int32_t",
@@ -254,7 +255,7 @@ fn emit_expr(
 
 fn emit_switch(
     scrutinee: &Expr,
-    arms: &[(u32, Expr)],
+    arms: &[(u64, Expr)],
     default: &Expr,
     env: &HashMap<String, IntType>,
 ) -> Result<String, String> {

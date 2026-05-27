@@ -7,6 +7,7 @@ pub enum IntType {
     U8,
     U16,
     U32,
+    U64,
     I8,
     I16,
     I32,
@@ -19,6 +20,7 @@ impl IntType {
             "u8" => Some(IntType::U8),
             "u16" => Some(IntType::U16),
             "u32" => Some(IntType::U32),
+            "u64" => Some(IntType::U64),
             "i8" => Some(IntType::I8),
             "i16" => Some(IntType::I16),
             "i32" => Some(IntType::I32),
@@ -37,6 +39,7 @@ impl IntType {
             IntType::U16 | IntType::I16 => 1,
             IntType::U32 | IntType::I32 => 2,
             IntType::I64 => 3,
+            IntType::U64 => 4,
         }
     }
 }
@@ -92,7 +95,7 @@ pub enum Expr {
     },
     Switch {
         scrutinee: Box<Expr>,
-        arms: Vec<(u32, Expr)>,
+        arms: Vec<(u64, Expr)>,
         default: Box<Expr>,
     },
     IntCast {
