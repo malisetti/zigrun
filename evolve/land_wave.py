@@ -266,14 +266,17 @@ def bookkeep(wave_id):
 
 # ---- merge verified src to main + bookkeep + commit --------------------------
 def land_on_main(wave_id, spec_path, scratch, worker, env):
+    # ATOMIC: mutate the tree, verify, and on failure ROLL BACK fully so a failed
+    # land leaves NO pollution (a non-atomic earlier version left a half-promoted
+    # wave that poisoned every subsequent wave's gate). Promote by COPY (not
+    # git mv) so the pending spec survives a rollback for a clean re-attempt.
     sz = scratch / "zigrun"
     for f in ("ast.rs", "lexer.rs", "parser.rs", "codegen.rs", "main.rs"):
         src = sz / "src" / f
         if src.exists():
             shutil.copy(src, ZIGRUN / "src" / f)
-    # promote spec into the suite (git runs from REPO; spec_path is under zigrun/)
-    sh(["git", "mv", f"zigrun/{spec_path}", f"zigrun/oracle/{wave_id}.zig"], cwd=REPO)
-    # derive expected exit from real zig and extend the default suites
+    promoted = ZIGRUN / "oracle" / f"{wave_id}.zig"
+    shutil.copy(ZIGRUN / spec_path, promoted)  # copy, not move — pending stays until success
     for suite in ("check.sh", "diff.sh"):
         p = ZIGRUN / "oracle" / suite
         t = p.read_text()
@@ -284,7 +287,13 @@ def land_on_main(wave_id, spec_path, scratch, worker, env):
     sh(["cargo", "build", "--quiet"], cwd=ZIGRUN, timeout=300)
     final = sh(["bash", "oracle/diff.sh"], cwd=ZIGRUN, timeout=600)
     if final.returncode != 0:
+        # roll back every mutation; the pending spec (untracked) is left for re-attempt
+        sh(["git", "checkout", "--", "zigrun/src", "zigrun/oracle/check.sh",
+            "zigrun/oracle/diff.sh"], cwd=REPO)
+        promoted.unlink(missing_ok=True)
+        sh(["cargo", "build", "--quiet"], cwd=ZIGRUN, timeout=300)
         return False, final.stdout + final.stderr
+    (ZIGRUN / spec_path).unlink(missing_ok=True)  # success: drop the pending copy
     bookkeep(wave_id)  # flip WAVES.md [x] + bump FEATURES.md — fully hands-off
     msg = (f"feat(zigrun): {wave_id} wave — landed autonomously, verified vs real zig\n\n"
            f"Dispatched, recovered the worker patch, gated against real zig with the\n"
@@ -294,7 +303,7 @@ def land_on_main(wave_id, spec_path, scratch, worker, env):
            f"Co-authored-by: Cursor <cursoragent@cursor.com>\n"
            f"Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>")
     sh(["git", "add", "zigrun/src", f"zigrun/oracle/{wave_id}.zig",
-        "zigrun/oracle/check.sh", "zigrun/oracle/diff.sh",
+        "zigrun/oracle/check.sh", "zigrun/oracle/diff.sh", "zigrun/oracle/pending",
         "zigrun/evolve/WAVES.md", "zigrun/FEATURES.md"], cwd=REPO)
     subprocess.run(["git", "commit", "-q", "-F", "-"], cwd=REPO, input=msg, text=True)
     return True, final.stdout
