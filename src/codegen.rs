@@ -6,7 +6,7 @@
 // u8 semantics here are C's `uint8_t` (wrapping), a known divergence from Zig's
 // checked arithmetic — tracked in FEATURES.md.
 
-use crate::ast::{BinOp, Expr, Function, IntType, Program, Stmt, Type};
+use crate::ast::{AssignTarget, BinOp, Expr, Function, IntType, Program, Stmt, Type};
 use std::collections::HashMap;
 use std::fmt::Write;
 
@@ -15,7 +15,7 @@ pub fn emit_c(program: &Program) -> Result<String, String> {
         return Err("no `main` function".to_string());
     }
     let mut out = String::new();
-    out.push_str("#include <stdint.h>\n#include <stdbool.h>\n\n");
+    out.push_str("#include <stdint.h>\n#include <stdbool.h>\n#include <stddef.h>\n\n");
 
     for f in &program.functions {
         let _ = writeln!(out, "{};", prototype(f));
@@ -35,21 +35,29 @@ fn c_fn(name: &str) -> String {
     format!("zig_{name}")
 }
 
-fn c_type(ty: Type) -> &'static str {
+fn c_type(ty: Type) -> String {
     match ty {
-        Type::Bool => "bool",
-        Type::Int(IntType::U8) => "uint8_t",
-        Type::Int(IntType::U16) => "uint16_t",
-        Type::Int(IntType::U32) => "uint32_t",
-        Type::Int(IntType::U64) => "uint64_t",
-        Type::Int(IntType::I8) => "int8_t",
-        Type::Int(IntType::I16) => "int16_t",
-        Type::Int(IntType::I32) => "int32_t",
-        Type::Int(IntType::I64) => "int64_t",
+        Type::Bool => "bool".to_string(),
+        Type::Int(IntType::U8) => "uint8_t".to_string(),
+        Type::Int(IntType::U16) => "uint16_t".to_string(),
+        Type::Int(IntType::U32) => "uint32_t".to_string(),
+        Type::Int(IntType::U64) => "uint64_t".to_string(),
+        Type::Int(IntType::I8) => "int8_t".to_string(),
+        Type::Int(IntType::I16) => "int16_t".to_string(),
+        Type::Int(IntType::I32) => "int32_t".to_string(),
+        Type::Int(IntType::I64) => "int64_t".to_string(),
+        Type::Array { .. } => "uint8_t".to_string(),
     }
 }
 
-fn c_int_type(ty: IntType) -> &'static str {
+fn c_var_decl(name: &str, ty: Type) -> String {
+    match ty {
+        Type::Array { len, elem } => format!("{} {}[{}]", c_int_type(elem), name, len),
+        other => format!("{} {name}", c_type(other)),
+    }
+}
+
+fn c_int_type(ty: IntType) -> String {
     c_type(Type::Int(ty))
 }
 
@@ -104,6 +112,27 @@ fn expr_type(expr: &Expr, env: &HashMap<String, Type>) -> Type {
         Expr::IntCast { target, .. } => Type::Int(*target),
         Expr::UnaryNeg(inner) => expr_type(inner, env),
         Expr::UnaryNot(_) => Type::Bool,
+        Expr::ArrayLiteral { elems, annotated } => {
+            if let Some((len, elem)) = annotated {
+                Type::Array { len: *len, elem: *elem }
+            } else if let Some(first) = elems.first() {
+                let elem = expr_type(first, env).int_type().unwrap_or(IntType::U8);
+                Type::Array {
+                    len: elems.len(),
+                    elem,
+                }
+            } else {
+                Type::Array {
+                    len: 0,
+                    elem: IntType::U8,
+                }
+            }
+        }
+        Expr::Index { base, .. } => {
+            env.get(base)
+                .and_then(|t| t.array_elem().map(|elem| Type::Int(elem)))
+                .unwrap_or(Type::Int(IntType::U8))
+        }
     }
 }
 
@@ -112,6 +141,13 @@ fn combine_types(a: Type, b: Type) -> Type {
         (Type::Int(x), Type::Int(y)) => Type::Int(wider_int_type(x, y)),
         (Type::Int(x), _) => Type::Int(x),
         (_, Type::Int(y)) => Type::Int(y),
+        (Type::Array { elem, .. }, Type::Array { elem: elem2, .. }) => {
+            Type::Array {
+                len: 0,
+                elem: wider_int_type(elem, elem2),
+            }
+        }
+        (Type::Array { elem, .. }, _) | (_, Type::Array { elem, .. }) => Type::Int(elem),
         _ => Type::Bool,
     }
 }
@@ -144,15 +180,20 @@ fn emit_stmt(
         Stmt::Let { name, ty, value } => {
             let _ = writeln!(
                 out,
-                "{} {name} = {};",
-                c_type(*ty),
+                "{} = {};",
+                c_var_decl(name, *ty),
                 emit_expr(value, env, Some(*ty))?
             );
             env.insert(name.clone(), *ty);
         }
-        Stmt::Assign { name, value } => {
-            let ty = env.get(name).copied().unwrap_or(Type::Int(IntType::U8));
-            let _ = writeln!(out, "{name} = {};", emit_expr(value, env, Some(ty))?);
+        Stmt::Assign { target, value } => {
+            let ty = assign_target_type(target, env);
+            let lhs = emit_assign_target(target, env)?;
+            let _ = writeln!(
+                out,
+                "{lhs} = {};",
+                emit_expr(value, env, Some(ty))?
+            );
         }
         Stmt::Return(e) => {
             let _ = writeln!(
@@ -196,7 +237,7 @@ fn emit_stmt(
         Stmt::Continue => {
             let _ = writeln!(out, "continue;");
         }
-        Stmt::For {
+        Stmt::ForRange {
             capture,
             start,
             end,
@@ -225,8 +266,63 @@ fn emit_stmt(
             indent(out, depth);
             out.push_str("}\n");
         }
+        Stmt::ForArray {
+            capture,
+            array,
+            body,
+        } => {
+            let arr_ty = env
+                .get(array)
+                .copied()
+                .ok_or_else(|| format!("unknown array variable {array}"))?;
+            let (len, elem) = match arr_ty {
+                Type::Array { len, elem } => (len, elem),
+                other => return Err(format!("for-loop expected array type, found {other:?}")),
+            };
+            let cap = capture.as_deref().unwrap_or("_zig_for_x");
+            let idx = format!("_{array}_i");
+            let _ = writeln!(out, "for (size_t {idx} = 0; {idx} < {len}; {idx}++) {{");
+            let _ = writeln!(
+                out,
+                "    {} {cap} = {array}[{idx}];",
+                c_int_type(elem)
+            );
+            if let Some(name) = capture {
+                env.insert(name.clone(), Type::Int(elem));
+            }
+            for s in body {
+                emit_stmt(out, s, depth + 1, env, return_type)?;
+            }
+            if let Some(name) = capture {
+                env.remove(name);
+            }
+            indent(out, depth);
+            out.push_str("}\n");
+        }
     }
     Ok(())
+}
+
+fn assign_target_type(target: &AssignTarget, env: &HashMap<String, Type>) -> Type {
+    match target {
+        AssignTarget::Name(name) => env.get(name).copied().unwrap_or(Type::Int(IntType::U8)),
+        AssignTarget::Index { base, .. } => env
+            .get(base)
+            .and_then(|t| t.array_elem().map(|elem| Type::Int(elem)))
+            .unwrap_or(Type::Int(IntType::U8)),
+    }
+}
+
+fn emit_assign_target(
+    target: &AssignTarget,
+    env: &HashMap<String, Type>,
+) -> Result<String, String> {
+    Ok(match target {
+        AssignTarget::Name(name) => name.clone(),
+        AssignTarget::Index { base, index } => {
+            format!("{base}[{}]", emit_expr(index, env, None)?)
+        }
+    })
 }
 
 fn emit_expr(
@@ -299,6 +395,28 @@ fn emit_expr(
             format!(
                 "(!({}))",
                 emit_expr(operand, env, Some(Type::Bool))?
+            )
+        }
+        Expr::ArrayLiteral { elems, annotated } => {
+            let elem_ty = expected
+                .and_then(|t| t.array_elem())
+                .or_else(|| annotated.map(|(_, elem)| elem))
+                .or_else(|| {
+                    elems
+                        .first()
+                        .map(|e| expr_type(e, env).int_type().unwrap_or(IntType::U8))
+                })
+                .unwrap_or(IntType::U8);
+            let parts: Result<Vec<_>, _> = elems
+                .iter()
+                .map(|e| emit_expr(e, env, Some(Type::Int(elem_ty))))
+                .collect();
+            format!("{{ {} }}", parts?.join(", "))
+        }
+        Expr::Index { base, index } => {
+            format!(
+                "{base}[{}]",
+                emit_expr(index, env, Some(Type::Int(IntType::U32)))?
             )
         }
     })

@@ -6,6 +6,7 @@
 pub enum Type {
     Bool,
     Int(IntType),
+    Array { len: usize, elem: IntType },
 }
 
 impl Type {
@@ -20,6 +21,21 @@ impl Type {
         match self {
             Type::Bool => None,
             Type::Int(t) => Some(t),
+            Type::Array { elem, .. } => Some(elem),
+        }
+    }
+
+    pub fn array_elem(self) -> Option<IntType> {
+        match self {
+            Type::Array { elem, .. } => Some(elem),
+            _ => None,
+        }
+    }
+
+    pub fn array_len(self) -> Option<usize> {
+        match self {
+            Type::Array { len, .. } => Some(len),
+            _ => None,
         }
     }
 
@@ -88,7 +104,7 @@ pub enum Stmt {
         ty: Type,
         value: Expr,
     },
-    Assign { name: String, value: Expr },
+    Assign { target: AssignTarget, value: Expr },
     Return(Expr),
     If {
         cond: Expr,
@@ -98,12 +114,23 @@ pub enum Stmt {
     While { cond: Expr, body: Vec<Stmt> },
     Break,
     Continue,
-    For {
+    ForRange {
         capture: Option<String>,
         start: Expr,
         end: Expr,
         body: Vec<Stmt>,
     },
+    ForArray {
+        capture: Option<String>,
+        array: String,
+        body: Vec<Stmt>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AssignTarget {
+    Name(String),
+    Index { base: String, index: Expr },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -128,6 +155,15 @@ pub enum Expr {
     },
     UnaryNeg(Box<Expr>),
     UnaryNot(Box<Expr>),
+    ArrayLiteral {
+        elems: Vec<Expr>,
+        /// Present for `[N]type{ ... }`; absent for `.{ ... }`.
+        annotated: Option<(usize, IntType)>,
+    },
+    Index {
+        base: String,
+        index: Box<Expr>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

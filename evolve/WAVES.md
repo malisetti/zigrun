@@ -23,8 +23,10 @@ durable state — stop and resume any time.
 - [x] u64wide | oracle/u64wide.zig | `u64` integer width + `@intCast` — extend the int type model to 64-bit. (landed autonomously vs real zig)
 - [x] unaryneg | oracle/unaryneg.zig | unary minus `-x` on signed integers. (landed autonomously vs real zig)
 - [x] boollogic | oracle/boollogic.zig | `bool` type + `true`/`false` literals + logical `and`/`or`/`!`. (landed autonomously vs real zig)
+- [x] arraysum | oracle/arraysum.zig | fixed-size array summed with a for-loop (self-authored, real-zig-validated) (landed autonomously vs real zig)
 
 ## Frontier (pending — each is real Zig that zigrun must learn to match)
+- [ ] arrayidx | oracle/pending/arrayidx.zig | fixed-size array declaration + indexing a[i] (self-authored, real-zig-validated)
 - [ ] print | (spec deferred) | NEEDS ORACLE WORK FIRST: `std.debug.print` writes to STDERR but diff.sh compares stdout — gate must observe stderr (or use std.io stdout writer) before this wave is false-green-safe.
 
 ## How a wave lands

@@ -19,7 +19,7 @@
 //              | "switch" "(" expr ")" "{" ( int "=>" expr "," )* "else" "=>" expr "}"
 //              | "@intCast" "(" expr ")"
 
-use crate::ast::{BinOp, Expr, Function, IntType, Program, Stmt, Type};
+use crate::ast::{AssignTarget, BinOp, Expr, Function, IntType, Program, Stmt, Type};
 use crate::lexer::{Token, TokenKind};
 
 pub struct Parser {
@@ -82,6 +82,22 @@ impl Parser {
     }
 
     fn parse_type(&mut self) -> Result<Type, String> {
+        if self.check(&TokenKind::LBracket) {
+            self.advance();
+            let len = match self.peek_kind() {
+                TokenKind::Int(n) => {
+                    self.advance();
+                    n as usize
+                }
+                other => return Err(format!("expected array length, found {other:?}")),
+            };
+            self.expect(TokenKind::RBracket)?;
+            let elem = match self.parse_type()? {
+                Type::Int(t) => t,
+                other => return Err(format!("array element must be an integer type, found {other:?}")),
+            };
+            return Ok(Type::Array { len, elem });
+        }
         let name = match self.peek_kind() {
             TokenKind::Bool => {
                 self.advance();
@@ -111,10 +127,15 @@ impl Parser {
             TokenKind::Const | TokenKind::Var => {
                 self.advance();
                 let name = self.expect_ident()?;
-                self.expect(TokenKind::Colon)?;
-                let ty = self.parse_type()?;
+                let ty = if self.check(&TokenKind::Colon) {
+                    self.advance();
+                    Some(self.parse_type()?)
+                } else {
+                    None
+                };
                 self.expect(TokenKind::Assign)?;
                 let value = self.parse_expr()?;
+                let ty = ty.unwrap_or_else(|| infer_expr_type(&value));
                 self.expect(TokenKind::Semicolon)?;
                 Ok(Stmt::Let { name, ty, value })
             }
@@ -149,42 +170,118 @@ impl Parser {
             TokenKind::For => {
                 self.advance();
                 self.expect(TokenKind::LParen)?;
-                let start = self.parse_expr()?;
-                self.expect(TokenKind::DotDot)?;
-                let end = self.parse_expr()?;
-                self.expect(TokenKind::RParen)?;
-                self.expect(TokenKind::Pipe)?;
-                let capture = match self.peek_kind() {
-                    TokenKind::Ident(name) if name == "_" => {
-                        self.advance();
-                        None
-                    }
-                    TokenKind::Ident(name) => {
-                        self.advance();
-                        Some(name)
-                    }
-                    other => {
-                        return Err(format!("expected capture identifier or '_', found {other:?}"))
-                    }
-                };
-                self.expect(TokenKind::Pipe)?;
-                let body = self.parse_block()?;
-                Ok(Stmt::For {
-                    capture,
-                    start,
-                    end,
-                    body,
-                })
+                let first = self.parse_expr()?;
+                if self.check(&TokenKind::DotDot) {
+                    self.advance();
+                    let end = self.parse_expr()?;
+                    self.expect(TokenKind::RParen)?;
+                    let capture = self.parse_for_capture()?;
+                    let body = self.parse_block()?;
+                    Ok(Stmt::ForRange {
+                        capture,
+                        start: first,
+                        end,
+                        body,
+                    })
+                } else {
+                    let array = match first {
+                        Expr::Var(name) => name,
+                        other => {
+                            return Err(format!(
+                                "expected array identifier in for-loop, found {other:?}"
+                            ))
+                        }
+                    };
+                    self.expect(TokenKind::RParen)?;
+                    let capture = self.parse_for_capture()?;
+                    let body = self.parse_block()?;
+                    Ok(Stmt::ForArray {
+                        capture,
+                        array,
+                        body,
+                    })
+                }
+            }
+            TokenKind::Ident(name) => self.parse_assign_stmt(name),
+            other => Err(format!("unexpected token at start of statement: {other:?}")),
+        }
+    }
+
+    fn parse_for_capture(&mut self) -> Result<Option<String>, String> {
+        self.expect(TokenKind::Pipe)?;
+        let capture = match self.peek_kind() {
+            TokenKind::Ident(name) if name == "_" => {
+                self.advance();
+                None
             }
             TokenKind::Ident(name) => {
                 self.advance();
-                self.expect(TokenKind::Assign)?;
-                let value = self.parse_expr()?;
-                self.expect(TokenKind::Semicolon)?;
-                Ok(Stmt::Assign { name, value })
+                Some(name)
             }
-            other => Err(format!("unexpected token at start of statement: {other:?}")),
-        }
+            other => {
+                return Err(format!("expected capture identifier or '_', found {other:?}"))
+            }
+        };
+        self.expect(TokenKind::Pipe)?;
+        Ok(capture)
+    }
+
+    fn parse_assign_stmt(&mut self, name: String) -> Result<Stmt, String> {
+        self.advance();
+        let target = if self.check(&TokenKind::LBracket) {
+            self.advance();
+            let index = self.parse_expr()?;
+            self.expect(TokenKind::RBracket)?;
+            AssignTarget::Index { base: name, index }
+        } else {
+            AssignTarget::Name(name)
+        };
+        let (op, is_compound) = match self.peek_kind() {
+            TokenKind::Assign => {
+                self.advance();
+                (None, false)
+            }
+            TokenKind::PlusAssign => {
+                self.advance();
+                (Some(BinOp::Add), true)
+            }
+            TokenKind::MinusAssign => {
+                self.advance();
+                (Some(BinOp::Sub), true)
+            }
+            TokenKind::StarAssign => {
+                self.advance();
+                (Some(BinOp::Mul), true)
+            }
+            TokenKind::SlashAssign => {
+                self.advance();
+                (Some(BinOp::Div), true)
+            }
+            TokenKind::PercentAssign => {
+                self.advance();
+                (Some(BinOp::Mod), true)
+            }
+            other => return Err(format!("expected assignment operator, found {other:?}")),
+        };
+        let rhs = self.parse_expr()?;
+        self.expect(TokenKind::Semicolon)?;
+        let value = if is_compound {
+            let left = match &target {
+                AssignTarget::Name(name) => Expr::Var(name.clone()),
+                AssignTarget::Index { base, index } => Expr::Index {
+                    base: base.clone(),
+                    index: Box::new(index.clone()),
+                },
+            };
+            Expr::BinOp {
+                op: op.unwrap(),
+                left: Box::new(left),
+                right: Box::new(rhs),
+            }
+        } else {
+            rhs
+        };
+        Ok(Stmt::Assign { target, value })
     }
 
     fn parse_if_stmt(&mut self) -> Result<Stmt, String> {
@@ -355,11 +452,42 @@ impl Parser {
             let operand = self.parse_unary()?;
             return Ok(Expr::UnaryNeg(Box::new(operand)));
         }
-        self.parse_primary()
+        self.parse_postfix()
+    }
+
+    fn parse_postfix(&mut self) -> Result<Expr, String> {
+        let mut expr = self.parse_primary()?;
+        while self.check(&TokenKind::LBracket) {
+            self.advance();
+            let index = self.parse_expr()?;
+            self.expect(TokenKind::RBracket)?;
+            let base = match expr {
+                Expr::Var(name) => name,
+                other => {
+                    return Err(format!("expected variable before index, found {other:?}"))
+                }
+            };
+            expr = Expr::Index {
+                base,
+                index: Box::new(index),
+            };
+        }
+        Ok(expr)
     }
 
     fn parse_primary(&mut self) -> Result<Expr, String> {
         match self.peek_kind() {
+            TokenKind::LBracket => self.parse_typed_array_literal(),
+            TokenKind::Dot => {
+                self.advance();
+                self.expect(TokenKind::LBrace)?;
+                let elems = self.parse_array_elems()?;
+                self.expect(TokenKind::RBrace)?;
+                Ok(Expr::ArrayLiteral {
+                    elems,
+                    annotated: None,
+                })
+            }
             TokenKind::At => {
                 self.advance();
                 let builtin = self.expect_ident()?;
@@ -419,6 +547,48 @@ impl Parser {
             }
             other => Err(format!("expected an expression, found {other:?}")),
         }
+    }
+
+    fn parse_typed_array_literal(&mut self) -> Result<Expr, String> {
+        self.advance();
+        let len = match self.peek_kind() {
+            TokenKind::Int(n) => {
+                self.advance();
+                n as usize
+            }
+            other => return Err(format!("expected array length, found {other:?}")),
+        };
+        self.expect(TokenKind::RBracket)?;
+        let elem = match self.parse_type()? {
+            Type::Int(t) => t,
+            other => {
+                return Err(format!(
+                    "array element must be an integer type, found {other:?}"
+                ))
+            }
+        };
+        self.expect(TokenKind::LBrace)?;
+        let elems = self.parse_array_elems()?;
+        self.expect(TokenKind::RBrace)?;
+        Ok(Expr::ArrayLiteral {
+            elems,
+            annotated: Some((len, elem)),
+        })
+    }
+
+    fn parse_array_elems(&mut self) -> Result<Vec<Expr>, String> {
+        let mut elems = Vec::new();
+        if !self.check(&TokenKind::RBrace) {
+            loop {
+                elems.push(self.parse_expr()?);
+                if self.check(&TokenKind::Comma) {
+                    self.advance();
+                } else {
+                    break;
+                }
+            }
+        }
+        Ok(elems)
     }
 
     fn parse_switch(&mut self) -> Result<Expr, String> {
@@ -496,6 +666,70 @@ impl Parser {
         if self.pos < self.tokens.len() {
             self.pos += 1;
         }
+    }
+}
+
+fn infer_expr_type(expr: &Expr) -> Type {
+    match expr {
+        Expr::Int(_) => Type::Int(IntType::U8),
+        Expr::Bool(_) => Type::Bool,
+        Expr::Var(_) => Type::Int(IntType::U8),
+        Expr::Call { .. } => Type::Int(IntType::U8),
+        Expr::BinOp { op, left, right } => match op {
+            BinOp::LogicalAnd | BinOp::LogicalOr => Type::Bool,
+            _ => {
+                let lt = infer_expr_type(left);
+                let rt = infer_expr_type(right);
+                match (lt, rt) {
+                    (Type::Int(a), Type::Int(b)) => Type::Int(wider_int_type(a, b)),
+                    (Type::Int(a), _) => Type::Int(a),
+                    (_, Type::Int(b)) => Type::Int(b),
+                    _ => Type::Bool,
+                }
+            }
+        },
+        Expr::Switch { default, .. } => infer_expr_type(default),
+        Expr::IntCast { target, .. } => Type::Int(*target),
+        Expr::UnaryNeg(inner) => infer_expr_type(inner),
+        Expr::UnaryNot(_) => Type::Bool,
+        Expr::ArrayLiteral { elems, annotated } => {
+            if let Some((len, elem)) = annotated {
+                Type::Array {
+                    len: *len,
+                    elem: *elem,
+                }
+            } else if let Some(first) = elems.first() {
+                let elem = infer_expr_type(first)
+                    .int_type()
+                    .unwrap_or(IntType::U8);
+                Type::Array {
+                    len: elems.len(),
+                    elem,
+                }
+            } else {
+                Type::Array {
+                    len: 0,
+                    elem: IntType::U8,
+                }
+            }
+        }
+        Expr::Index { base: _, index: _ } => Type::Int(IntType::U8),
+    }
+}
+
+fn wider_int_type(a: IntType, b: IntType) -> IntType {
+    let ra = a.rank();
+    let rb = b.rank();
+    if ra > rb {
+        a
+    } else if rb > ra {
+        b
+    } else if a.is_signed() {
+        a
+    } else if b.is_signed() {
+        b
+    } else {
+        a
     }
 }
 

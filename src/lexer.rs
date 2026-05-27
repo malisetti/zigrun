@@ -23,6 +23,7 @@ pub enum TokenKind {
     Or,
     Bang,
     FatArrow,
+    Dot,
     DotDot,
     Ident(String),
     Int(u64),
@@ -39,6 +40,11 @@ pub enum TokenKind {
     EqEq,
     Ne,
     Assign,
+    PlusAssign,
+    MinusAssign,
+    StarAssign,
+    SlashAssign,
+    PercentAssign,
     Amp,
     Pipe,
     Caret,
@@ -48,6 +54,8 @@ pub enum TokenKind {
     RParen,
     LBrace,
     RBrace,
+    LBracket,
+    RBracket,
     Comma,
     Colon,
     Semicolon,
@@ -101,11 +109,50 @@ impl<'a> Lexer<'a> {
 
         self.pos += 1; // consume the operator/punctuation char
         let kind = match ch {
-            '+' => TokenKind::Plus,
-            '-' => TokenKind::Minus,
-            '*' => TokenKind::Star,
-            '/' => TokenKind::Slash,
-            '%' => TokenKind::Percent,
+            '=' => {
+                if self.eat('=') {
+                    TokenKind::EqEq
+                } else if self.eat('>') {
+                    TokenKind::FatArrow
+                } else {
+                    TokenKind::Assign
+                }
+            }
+            '+' => {
+                if self.eat('=') {
+                    TokenKind::PlusAssign
+                } else {
+                    TokenKind::Plus
+                }
+            }
+            '-' => {
+                if self.eat('=') {
+                    TokenKind::MinusAssign
+                } else {
+                    TokenKind::Minus
+                }
+            }
+            '*' => {
+                if self.eat('=') {
+                    TokenKind::StarAssign
+                } else {
+                    TokenKind::Star
+                }
+            }
+            '/' => {
+                if self.eat('=') {
+                    TokenKind::SlashAssign
+                } else {
+                    TokenKind::Slash
+                }
+            }
+            '%' => {
+                if self.eat('=') {
+                    TokenKind::PercentAssign
+                } else {
+                    TokenKind::Percent
+                }
+            }
             '&' => TokenKind::Amp,
             '|' => TokenKind::Pipe,
             '^' => TokenKind::Caret,
@@ -113,6 +160,8 @@ impl<'a> Lexer<'a> {
             ')' => TokenKind::RParen,
             '{' => TokenKind::LBrace,
             '}' => TokenKind::RBrace,
+            '[' => TokenKind::LBracket,
+            ']' => TokenKind::RBracket,
             ',' => TokenKind::Comma,
             ':' => TokenKind::Colon,
             ';' => TokenKind::Semicolon,
@@ -121,7 +170,7 @@ impl<'a> Lexer<'a> {
                 if self.eat('.') {
                     TokenKind::DotDot
                 } else {
-                    return Err("unexpected '.' (only '..' is supported)".to_string());
+                    TokenKind::Dot
                 }
             }
             '<' => {
@@ -140,15 +189,6 @@ impl<'a> Lexer<'a> {
                     TokenKind::Ge
                 } else {
                     TokenKind::Gt
-                }
-            }
-            '=' => {
-                if self.eat('=') {
-                    TokenKind::EqEq
-                } else if self.eat('>') {
-                    TokenKind::FatArrow
-                } else {
-                    TokenKind::Assign
                 }
             }
             '!' => {
