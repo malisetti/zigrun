@@ -20,8 +20,9 @@ spawn_claude() { # name model labels co-author
   echo "[$(now)] respawn $1"
   nohup "$NF" worker --name "$1" --api-key "$KEY" --flavor claude-code --labels "$3" \
     --execution-roles implementer,verifier,reducer,integrator --max-tasks 4 --per-task-worktree \
-    --heartbeat-interval 15s --mcp-command nfltr claude-mcp --model "$2" --reasoning-effort medium \
-    --permission-mode bypassPermissions --co-author "$4" > "$LOGD/$1.log" 2>&1 &
+    --heartbeat-interval 15s \
+    --mcp-command "nfltr claude-mcp --model $2 --reasoning-effort medium --permission-mode bypassPermissions --co-author \"$4\"" \
+    > "$LOGD/$1.log" 2>&1 &
 }
 spawn_cursor() { # name
   pgrep -f "nfltr worker --name $1 " >/dev/null && return
@@ -29,8 +30,9 @@ spawn_cursor() { # name
   nohup "$NF" worker --name "$1" --api-key "$KEY" --flavor cursor \
     --labels model=composer-2.5,tier=heavy,flavor=cursor \
     --execution-roles implementer,verifier,reducer,integrator --max-tasks 4 --per-task-worktree \
-    --heartbeat-interval 15s --mcp-command nfltr cursor-mcp --cursor-command cursor-agent \
-    --model composer-2.5 --git-code-result --max-verifier-turns 5 > "$LOGD/$1.log" 2>&1 &
+    --heartbeat-interval 15s \
+    --mcp-command "nfltr cursor-mcp --cursor-command cursor-agent --model composer-2.5 --git-code-result --max-verifier-turns 5" \
+    > "$LOGD/$1.log" 2>&1 &
 }
 fleet_up() {
   spawn_claude claude-sonnet-0 claude-sonnet-4-6 model=sonnet,tier=heavy,flavor=claude-code "Claude Sonnet 4.6"
