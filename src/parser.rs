@@ -19,13 +19,13 @@
 //              | "switch" "(" expr ")" "{" ( int "=>" expr "," )* "else" "=>" expr "}"
 //              | "@intCast" "(" expr ")"
 
-use crate::ast::{BinOp, Expr, Function, IntType, Program, Stmt};
+use crate::ast::{BinOp, Expr, Function, IntType, Program, Stmt, Type};
 use crate::lexer::{Token, TokenKind};
 
 pub struct Parser {
     tokens: Vec<Token>,
     pos: usize,
-    return_type: IntType,
+    return_type: Type,
 }
 
 impl Parser {
@@ -33,7 +33,7 @@ impl Parser {
         Self {
             tokens,
             pos: 0,
-            return_type: IntType::U8,
+            return_type: Type::Int(IntType::U8),
         }
     }
 
@@ -81,10 +81,19 @@ impl Parser {
         })
     }
 
-    fn parse_type(&mut self) -> Result<IntType, String> {
-        let name = self.expect_ident()?;
-        IntType::from_name(&name)
-            .ok_or_else(|| format!("unsupported type {name:?}"))
+    fn parse_type(&mut self) -> Result<Type, String> {
+        let name = match self.peek_kind() {
+            TokenKind::Bool => {
+                self.advance();
+                return Ok(Type::Bool);
+            }
+            TokenKind::Ident(name) => {
+                self.advance();
+                name
+            }
+            other => return Err(format!("expected a type, found {other:?}")),
+        };
+        Type::from_name(&name).ok_or_else(|| format!("unsupported type {name:?}"))
     }
 
     fn parse_block(&mut self) -> Result<Vec<Stmt>, String> {
@@ -202,6 +211,43 @@ impl Parser {
     }
 
     fn parse_expr(&mut self) -> Result<Expr, String> {
+        self.parse_logical_or()
+    }
+
+    fn parse_logical_or(&mut self) -> Result<Expr, String> {
+        let mut left = self.parse_logical_and()?;
+        while self.check(&TokenKind::Or) {
+            self.advance();
+            let right = self.parse_logical_and()?;
+            left = Expr::BinOp {
+                op: BinOp::LogicalOr,
+                left: Box::new(left),
+                right: Box::new(right),
+            };
+        }
+        Ok(left)
+    }
+
+    fn parse_logical_and(&mut self) -> Result<Expr, String> {
+        let mut left = self.parse_logical_not()?;
+        while self.check(&TokenKind::And) {
+            self.advance();
+            let right = self.parse_logical_not()?;
+            left = Expr::BinOp {
+                op: BinOp::LogicalAnd,
+                left: Box::new(left),
+                right: Box::new(right),
+            };
+        }
+        Ok(left)
+    }
+
+    fn parse_logical_not(&mut self) -> Result<Expr, String> {
+        if self.check(&TokenKind::Bang) {
+            self.advance();
+            let operand = self.parse_logical_not()?;
+            return Ok(Expr::UnaryNot(Box::new(operand)));
+        }
         self.parse_bitwise()
     }
 
@@ -323,10 +369,21 @@ impl Parser {
                 self.expect(TokenKind::LParen)?;
                 let expr = self.parse_expr()?;
                 self.expect(TokenKind::RParen)?;
+                let target = self.return_type.int_type().ok_or_else(|| {
+                    "@intCast target must be an integer type".to_string()
+                })?;
                 Ok(Expr::IntCast {
                     expr: Box::new(expr),
-                    target: self.return_type,
+                    target,
                 })
+            }
+            TokenKind::True => {
+                self.advance();
+                Ok(Expr::Bool(true))
+            }
+            TokenKind::False => {
+                self.advance();
+                Ok(Expr::Bool(false))
             }
             TokenKind::Int(n) => {
                 self.advance();
@@ -454,6 +511,9 @@ mod tests {
         let prog = Parser::new(toks).parse_program().unwrap();
         assert_eq!(prog.functions.len(), 2);
         assert_eq!(prog.functions[0].name, "fib");
-        assert_eq!(prog.functions[0].params, vec![("n".to_string(), IntType::U8)]);
+        assert_eq!(
+            prog.functions[0].params,
+            vec![("n".to_string(), Type::Int(IntType::U8))]
+        );
     }
 }

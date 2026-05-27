@@ -16,6 +16,12 @@ pub enum TokenKind {
     Break,
     Continue,
     Switch,
+    Bool,
+    True,
+    False,
+    And,
+    Or,
+    Bang,
     FatArrow,
     DotDot,
     Ident(String),
@@ -149,7 +155,7 @@ impl<'a> Lexer<'a> {
                 if self.eat('=') {
                     TokenKind::Ne
                 } else {
-                    return Err("unexpected '!' (only '!=' is supported)".to_string());
+                    TokenKind::Bang
                 }
             }
             other => return Err(format!("unexpected character {other:?}")),
@@ -193,6 +199,11 @@ impl<'a> Lexer<'a> {
             "break" => TokenKind::Break,
             "continue" => TokenKind::Continue,
             "switch" => TokenKind::Switch,
+            "bool" => TokenKind::Bool,
+            "true" => TokenKind::True,
+            "false" => TokenKind::False,
+            "and" => TokenKind::And,
+            "or" => TokenKind::Or,
             other => TokenKind::Ident(other.to_string()),
         }
     }

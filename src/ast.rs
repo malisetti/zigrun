@@ -3,6 +3,29 @@
 // cover integer literals, variable refs, function calls, and binary operators.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Type {
+    Bool,
+    Int(IntType),
+}
+
+impl Type {
+    pub fn from_name(name: &str) -> Option<Self> {
+        if name == "bool" {
+            return Some(Type::Bool);
+        }
+        IntType::from_name(name).map(Type::Int)
+    }
+
+    pub fn int_type(self) -> Option<IntType> {
+        match self {
+            Type::Bool => None,
+            Type::Int(t) => Some(t),
+        }
+    }
+
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IntType {
     U8,
     U16,
@@ -52,8 +75,8 @@ pub struct Program {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Function {
     pub name: String,
-    pub params: Vec<(String, IntType)>,
-    pub return_type: IntType,
+    pub params: Vec<(String, Type)>,
+    pub return_type: Type,
     pub body: Vec<Stmt>,
 }
 
@@ -62,7 +85,7 @@ pub enum Stmt {
     /// `const`/`var` binding — mutability is not enforced in this subset.
     Let {
         name: String,
-        ty: IntType,
+        ty: Type,
         value: Expr,
     },
     Assign { name: String, value: Expr },
@@ -86,6 +109,7 @@ pub enum Stmt {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Expr {
     Int(i64),
+    Bool(bool),
     Var(String),
     Call { name: String, args: Vec<Expr> },
     BinOp {
@@ -103,6 +127,7 @@ pub enum Expr {
         target: IntType,
     },
     UnaryNeg(Box<Expr>),
+    UnaryNot(Box<Expr>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -123,4 +148,6 @@ pub enum BinOp {
     BitXor,
     Shl,
     Shr,
+    LogicalAnd,
+    LogicalOr,
 }

@@ -6,7 +6,7 @@
 // u8 semantics here are C's `uint8_t` (wrapping), a known divergence from Zig's
 // checked arithmetic — tracked in FEATURES.md.
 
-use crate::ast::{BinOp, Expr, Function, IntType, Program, Stmt};
+use crate::ast::{BinOp, Expr, Function, IntType, Program, Stmt, Type};
 use std::collections::HashMap;
 use std::fmt::Write;
 
@@ -15,7 +15,7 @@ pub fn emit_c(program: &Program) -> Result<String, String> {
         return Err("no `main` function".to_string());
     }
     let mut out = String::new();
-    out.push_str("#include <stdint.h>\n\n");
+    out.push_str("#include <stdint.h>\n#include <stdbool.h>\n\n");
 
     for f in &program.functions {
         let _ = writeln!(out, "{};", prototype(f));
@@ -35,17 +35,22 @@ fn c_fn(name: &str) -> String {
     format!("zig_{name}")
 }
 
-fn c_type(ty: IntType) -> &'static str {
+fn c_type(ty: Type) -> &'static str {
     match ty {
-        IntType::U8 => "uint8_t",
-        IntType::U16 => "uint16_t",
-        IntType::U32 => "uint32_t",
-        IntType::U64 => "uint64_t",
-        IntType::I8 => "int8_t",
-        IntType::I16 => "int16_t",
-        IntType::I32 => "int32_t",
-        IntType::I64 => "int64_t",
+        Type::Bool => "bool",
+        Type::Int(IntType::U8) => "uint8_t",
+        Type::Int(IntType::U16) => "uint16_t",
+        Type::Int(IntType::U32) => "uint32_t",
+        Type::Int(IntType::U64) => "uint64_t",
+        Type::Int(IntType::I8) => "int8_t",
+        Type::Int(IntType::I16) => "int16_t",
+        Type::Int(IntType::I32) => "int32_t",
+        Type::Int(IntType::I64) => "int64_t",
     }
+}
+
+fn c_int_type(ty: IntType) -> &'static str {
+    c_type(Type::Int(ty))
 }
 
 fn prototype(f: &Function) -> String {
@@ -68,7 +73,7 @@ fn prototype(f: &Function) -> String {
 
 fn emit_function(out: &mut String, f: &Function) -> Result<(), String> {
     let _ = writeln!(out, "{} {{", prototype(f));
-    let mut env: HashMap<String, IntType> = HashMap::new();
+    let mut env: HashMap<String, Type> = HashMap::new();
     for (name, ty) in &f.params {
         env.insert(name.clone(), *ty);
     }
@@ -85,19 +90,33 @@ fn indent(out: &mut String, depth: usize) {
     }
 }
 
-fn expr_type(expr: &Expr, env: &HashMap<String, IntType>) -> IntType {
+fn expr_type(expr: &Expr, env: &HashMap<String, Type>) -> Type {
     match expr {
-        Expr::Int(_) => IntType::U8,
-        Expr::Var(name) => env.get(name).copied().unwrap_or(IntType::U8),
-        Expr::BinOp { left, right, .. } => wider_type(expr_type(left, env), expr_type(right, env)),
-        Expr::Call { .. } => IntType::U8,
+        Expr::Int(_) => Type::Int(IntType::U8),
+        Expr::Bool(_) => Type::Bool,
+        Expr::Var(name) => env.get(name).copied().unwrap_or(Type::Int(IntType::U8)),
+        Expr::BinOp { op, left, right } => match op {
+            BinOp::LogicalAnd | BinOp::LogicalOr => Type::Bool,
+            _ => combine_types(expr_type(left, env), expr_type(right, env)),
+        },
+        Expr::Call { .. } => Type::Int(IntType::U8),
         Expr::Switch { default, .. } => expr_type(default, env),
-        Expr::IntCast { target, .. } => *target,
+        Expr::IntCast { target, .. } => Type::Int(*target),
         Expr::UnaryNeg(inner) => expr_type(inner, env),
+        Expr::UnaryNot(_) => Type::Bool,
     }
 }
 
-fn wider_type(a: IntType, b: IntType) -> IntType {
+fn combine_types(a: Type, b: Type) -> Type {
+    match (a, b) {
+        (Type::Int(x), Type::Int(y)) => Type::Int(wider_int_type(x, y)),
+        (Type::Int(x), _) => Type::Int(x),
+        (_, Type::Int(y)) => Type::Int(y),
+        _ => Type::Bool,
+    }
+}
+
+fn wider_int_type(a: IntType, b: IntType) -> IntType {
     let ra = a.rank();
     let rb = b.rank();
     if ra > rb {
@@ -117,8 +136,8 @@ fn emit_stmt(
     out: &mut String,
     stmt: &Stmt,
     depth: usize,
-    env: &mut HashMap<String, IntType>,
-    return_type: IntType,
+    env: &mut HashMap<String, Type>,
+    return_type: Type,
 ) -> Result<(), String> {
     indent(out, depth);
     match stmt {
@@ -132,7 +151,7 @@ fn emit_stmt(
             env.insert(name.clone(), *ty);
         }
         Stmt::Assign { name, value } => {
-            let ty = env.get(name).copied().unwrap_or(IntType::U8);
+            let ty = env.get(name).copied().unwrap_or(Type::Int(IntType::U8));
             let _ = writeln!(out, "{name} = {};", emit_expr(value, env, Some(ty))?);
         }
         Stmt::Return(e) => {
@@ -184,16 +203,18 @@ fn emit_stmt(
             body,
         } => {
             let var = capture.as_deref().unwrap_or("_zig_for_i");
-            let loop_ty = wider_type(expr_type(start, env), expr_type(end, env));
+            let loop_ty = combine_types(expr_type(start, env), expr_type(end, env))
+                .int_type()
+                .unwrap_or(IntType::U8);
             let _ = writeln!(
                 out,
                 "for ({} {var} = {}; {var} < {}; {var}++) {{",
-                c_type(loop_ty),
-                emit_expr(start, env, Some(loop_ty))?,
-                emit_expr(end, env, Some(loop_ty))?
+                c_int_type(loop_ty),
+                emit_expr(start, env, Some(Type::Int(loop_ty)))?,
+                emit_expr(end, env, Some(Type::Int(loop_ty)))?
             );
             if let Some(cap) = capture {
-                env.insert(cap.clone(), loop_ty);
+                env.insert(cap.clone(), Type::Int(loop_ty));
             }
             for s in body {
                 emit_stmt(out, s, depth + 1, env, return_type)?;
@@ -210,8 +231,8 @@ fn emit_stmt(
 
 fn emit_expr(
     expr: &Expr,
-    env: &HashMap<String, IntType>,
-    expected: Option<IntType>,
+    env: &HashMap<String, Type>,
+    expected: Option<Type>,
 ) -> Result<String, String> {
     Ok(match expr {
         Expr::Int(n) => {
@@ -219,6 +240,13 @@ fn emit_expr(
                 format!("({})({})", c_type(ty), n)
             } else {
                 n.to_string()
+            }
+        }
+        Expr::Bool(v) => {
+            if *v {
+                "true".to_string()
+            } else {
+                "false".to_string()
             }
         }
         Expr::Var(name) => name.clone(),
@@ -230,14 +258,23 @@ fn emit_expr(
             format!("{}({})", c_fn(name), parts.join(", "))
         }
         Expr::BinOp { op, left, right } => {
-            let ty = wider_type(expr_type(left, env), expr_type(right, env));
-            let expected_ty = expected.unwrap_or(ty);
-            format!(
-                "({} {} {})",
-                emit_expr(left, env, Some(expected_ty))?,
-                c_op(*op),
-                emit_expr(right, env, Some(expected_ty))?
-            )
+            if matches!(op, BinOp::LogicalAnd | BinOp::LogicalOr) {
+                format!(
+                    "({} {} {})",
+                    emit_expr(left, env, Some(Type::Bool))?,
+                    c_op(*op),
+                    emit_expr(right, env, Some(Type::Bool))?
+                )
+            } else {
+                let ty = combine_types(expr_type(left, env), expr_type(right, env));
+                let expected_ty = expected.unwrap_or(ty);
+                format!(
+                    "({} {} {})",
+                    emit_expr(left, env, Some(expected_ty))?,
+                    c_op(*op),
+                    emit_expr(right, env, Some(expected_ty))?
+                )
+            }
         }
         Expr::Switch {
             scrutinee,
@@ -247,7 +284,7 @@ fn emit_expr(
         Expr::IntCast { expr, target } => {
             format!(
                 "({})({})",
-                c_type(*target),
+                c_int_type(*target),
                 emit_expr(expr, env, None)?
             )
         }
@@ -258,6 +295,12 @@ fn emit_expr(
                 emit_expr(operand, env, Some(ty))?
             )
         }
+        Expr::UnaryNot(operand) => {
+            format!(
+                "(!({}))",
+                emit_expr(operand, env, Some(Type::Bool))?
+            )
+        }
     })
 }
 
@@ -265,7 +308,7 @@ fn emit_switch(
     scrutinee: &Expr,
     arms: &[(u64, Expr)],
     default: &Expr,
-    env: &HashMap<String, IntType>,
+    env: &HashMap<String, Type>,
 ) -> Result<String, String> {
     let s = emit_expr(scrutinee, env, None)?;
     let mut result = emit_expr(default, env, None)?;
@@ -294,6 +337,8 @@ fn c_op(op: BinOp) -> &'static str {
         BinOp::BitXor => "^",
         BinOp::Shl => "<<",
         BinOp::Shr => ">>",
+        BinOp::LogicalAnd => "&&",
+        BinOp::LogicalOr => "||",
     }
 }
 
