@@ -1,0 +1,13 @@
+[package]
+name = "zigrun"
+version = "0.0.1"
+edition = "2021"
+description = "A from-scratch interpreter for a real subset of Zig, built in Rust by nfltr orchestration and gated by an external oracle (oracle/*.zig run to real exit codes)."
+
+[[bin]]
+name = "zigrun"
+path = "src/main.rs"
+
+[profile.dev]
+# fast feedback for the oracle loop
+opt-level = 0
