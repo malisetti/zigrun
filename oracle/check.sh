@@ -20,7 +20,7 @@ bin=target/debug/zigrun
 
 progs=("$@")
 if [ ${#progs[@]} -eq 0 ]; then
-  progs=(add vars ifelse while fn fib bitops forloop switch elseif loopctl inttypes signedints u64wide)
+  progs=(add vars ifelse while fn fib bitops forloop switch elseif loopctl inttypes signedints u64wide unaryneg)
 fi
 
 fail=0

@@ -93,6 +93,7 @@ fn expr_type(expr: &Expr, env: &HashMap<String, IntType>) -> IntType {
         Expr::Call { .. } => IntType::U8,
         Expr::Switch { default, .. } => expr_type(default, env),
         Expr::IntCast { target, .. } => *target,
+        Expr::UnaryNeg(inner) => expr_type(inner, env),
     }
 }
 
@@ -248,6 +249,13 @@ fn emit_expr(
                 "({})({})",
                 c_type(*target),
                 emit_expr(expr, env, None)?
+            )
+        }
+        Expr::UnaryNeg(operand) => {
+            let ty = expected.unwrap_or(expr_type(operand, env));
+            format!(
+                "(-({}))",
+                emit_expr(operand, env, Some(ty))?
             )
         }
     })

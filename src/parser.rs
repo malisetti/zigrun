@@ -13,7 +13,8 @@
 // expr        := comparison
 // comparison  := additive ((<|>|<=|>=|==|!=) additive)?
 // additive    := multiplicative ((+|-) multiplicative)*
-// multiplicative := primary ((*|/|%) primary)*
+// multiplicative := unary ((*|/|%) unary)*
+// unary       := '-' unary | primary
 // primary     := int | ident ("(" args? ")")? | "(" expr ")"
 //              | "switch" "(" expr ")" "{" ( int "=>" expr "," )* "else" "=>" expr "}"
 //              | "@intCast" "(" expr ")"
@@ -283,7 +284,7 @@ impl Parser {
     }
 
     fn parse_multiplicative(&mut self) -> Result<Expr, String> {
-        let mut left = self.parse_primary()?;
+        let mut left = self.parse_unary()?;
         loop {
             let op = match self.peek_kind() {
                 TokenKind::Star => BinOp::Mul,
@@ -292,7 +293,7 @@ impl Parser {
                 _ => break,
             };
             self.advance();
-            let right = self.parse_primary()?;
+            let right = self.parse_unary()?;
             left = Expr::BinOp {
                 op,
                 left: Box::new(left),
@@ -300,6 +301,15 @@ impl Parser {
             };
         }
         Ok(left)
+    }
+
+    fn parse_unary(&mut self) -> Result<Expr, String> {
+        if self.check(&TokenKind::Minus) {
+            self.advance();
+            let operand = self.parse_unary()?;
+            return Ok(Expr::UnaryNeg(Box::new(operand)));
+        }
+        self.parse_primary()
     }
 
     fn parse_primary(&mut self) -> Result<Expr, String> {
@@ -317,16 +327,6 @@ impl Parser {
                     expr: Box::new(expr),
                     target: self.return_type,
                 })
-            }
-            TokenKind::Minus => {
-                self.advance();
-                match self.peek_kind() {
-                    TokenKind::Int(n) => {
-                        self.advance();
-                        Ok(Expr::Int(-(n as i64)))
-                    }
-                    other => Err(format!("expected integer after '-', found {other:?}")),
-                }
             }
             TokenKind::Int(n) => {
                 self.advance();

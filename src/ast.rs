@@ -102,6 +102,7 @@ pub enum Expr {
         expr: Box<Expr>,
         target: IntType,
     },
+    UnaryNeg(Box<Expr>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
