@@ -363,7 +363,7 @@ fn collect_optionals_in_expr(expr: &Expr, add: &mut dyn FnMut(&Type)) {
         }
         Expr::UnionLiteral { value: Some(v), .. } => collect_optionals_in_expr(v, add),
         Expr::FieldAccess { base, .. } => collect_optionals_in_expr(base, add),
-        Expr::IntFromEnum(inner) => collect_optionals_in_expr(inner, add),
+        Expr::IntFromEnum(inner) | Expr::Deref(inner) => collect_optionals_in_expr(inner, add),
         Expr::Int(_)
         | Expr::Bool(_)
         | Expr::Undefined
@@ -506,7 +506,7 @@ fn collect_error_unions_in_expr(expr: &Expr, add: &mut dyn FnMut(&Type)) {
         Expr::UnionLiteral { value: Some(v), .. } => collect_error_unions_in_expr(v, add),
         Expr::UnionLiteral { value: None, .. } => {}
         Expr::FieldAccess { base, .. } => collect_error_unions_in_expr(base, add),
-        Expr::IntFromEnum(inner) => collect_error_unions_in_expr(inner, add),
+        Expr::IntFromEnum(inner) | Expr::Deref(inner) => collect_error_unions_in_expr(inner, add),
         Expr::Int(_)
         | Expr::Bool(_)
         | Expr::Undefined
@@ -809,6 +809,9 @@ fn expr_type(expr: &Expr, env: &HashMap<String, Type>, func_returns: &HashMap<St
         ),
         Expr::EmptyInit => Type::Void,
         Expr::FieldAccess { base, field } => field_expr_type(base, field, env),
+        Expr::Deref(inner) => expr_type(inner, env, func_returns)
+            .pointee()
+            .unwrap_or(Type::Int(IntType::U8)),
         Expr::Orelse { left, right } => expr_type(left, env, func_returns)
             .optional_inner()
             .unwrap_or_else(|| expr_type(right, env, func_returns)),
@@ -1224,19 +1227,34 @@ fn emit_stmt(
         Stmt::ForArray {
             label,
             capture,
+            ptr_capture,
+            idx_capture,
             array,
+            ptr_iter,
             body,
         } => {
             let arr_ty = env
                 .get(array)
                 .cloned()
                 .ok_or_else(|| format!("unknown array variable {array}"))?;
-            let (len, elem_ty) = match &arr_ty {
-                Type::Array { len, elem } => (*len, elem.as_ref().clone()),
+            // Determine the underlying array type and whether we're iterating via a pointer
+            let (len, elem_ty, via_ptr) = match &arr_ty {
+                Type::Array { len, elem } => (*len, elem.as_ref().clone(), false),
+                Type::Pointer(inner) => match inner.as_ref() {
+                    Type::Array { len, elem } => (*len, elem.as_ref().clone(), true),
+                    _ => return Err(format!("for-loop expected array or pointer-to-array, found {arr_ty:?}")),
+                },
                 other => return Err(format!("for-loop expected array type, found {other:?}")),
             };
             let cap = capture.as_deref().unwrap_or("_zig_for_x");
-            let idx = format!("_{array}_i");
+            // Use idx_capture as loop variable if provided, else a private name
+            let idx_owned;
+            let idx: &str = if let Some(ic) = idx_capture {
+                ic.as_str()
+            } else {
+                idx_owned = format!("_{array}_i");
+                idx_owned.as_str()
+            };
             let end_label = label.as_ref().map(|zig_label| {
                 let c_label = format!("zig_lbreak_{}", *temp_id);
                 *temp_id += 1;
@@ -1244,14 +1262,52 @@ fn emit_stmt(
                 c_label
             });
             let _ = writeln!(out, "for (size_t {idx} = 0; {idx} < {len}; {idx}++) {{");
-            let cap_decl = match &elem_ty {
-                Type::Array { .. } => format!("{} *{cap} = {array}[{idx}]", c_array_base(&elem_ty)),
-                _ => format!("{} {cap} = {array}[{idx}]", c_type(&elem_ty)),
+
+            // Build the capture declaration
+            let cap_decl = if *ptr_capture {
+                // Pointer capture: `|*elem|` or `|*elem, idx|`
+                match &elem_ty {
+                    Type::Array { .. } => {
+                        // elem is itself an array; pointer to it
+                        if *ptr_iter || via_ptr {
+                            // for (&grid, ...) — grid[idx] decays to pointer in C
+                            format!("{} *{cap} = {array}[{idx}]", c_array_base(&elem_ty))
+                        } else {
+                            format!("{} *{cap} = {array}[{idx}]", c_array_base(&elem_ty))
+                        }
+                    }
+                    _ => {
+                        // Primitive element; `cell = &array[idx]`
+                        if via_ptr {
+                            // array is already a pointer; &ptr[idx]
+                            format!("{} *{cap} = &{array}[{idx}]", c_type(&elem_ty))
+                        } else {
+                            format!("{} *{cap} = &{array}[{idx}]", c_type(&elem_ty))
+                        }
+                    }
+                }
+            } else {
+                // Value capture (original behaviour)
+                match &elem_ty {
+                    Type::Array { .. } => format!("{} *{cap} = {array}[{idx}]", c_array_base(&elem_ty)),
+                    _ => format!("{} {cap} = {array}[{idx}]", c_type(&elem_ty)),
+                }
             };
             let _ = writeln!(out, "    {cap_decl};");
+
+            // Register captures in env
             if let Some(name) = capture {
-                env.insert(name.clone(), elem_ty.clone());
+                let cap_ty = if *ptr_capture {
+                    Type::Pointer(Box::new(elem_ty.clone()))
+                } else {
+                    elem_ty.clone()
+                };
+                env.insert(name.clone(), cap_ty);
             }
+            if let Some(ic) = idx_capture {
+                env.insert(ic.clone(), Type::Int(IntType::U64));
+            }
+
             for s in body {
                 emit_stmt(
                     out,
@@ -1267,6 +1323,9 @@ fn emit_stmt(
             }
             if let Some(name) = capture {
                 env.remove(name);
+            }
+            if let Some(ic) = idx_capture {
+                env.remove(ic);
             }
             indent(out, depth);
             out.push_str("}\n");
@@ -1406,6 +1465,9 @@ fn assign_target_type(target: &AssignTarget, env: &HashMap<String, Type>) -> Typ
             .unwrap_or(Type::Int(IntType::U8)),
         AssignTarget::Index { base, .. } => indexed_lvalue_type(base, env, &HashMap::new()),
         AssignTarget::Field { base, field } => field_expr_type(base, field, env),
+        AssignTarget::Deref(inner) => expr_type(inner, env, &HashMap::new())
+            .pointee()
+            .unwrap_or(Type::Int(IntType::U8)),
     }
 }
 
@@ -1442,6 +1504,9 @@ fn emit_assign_target(
         }
         AssignTarget::Field { base, field } => {
             emit_field_access(base, field, env, func_returns, fn_return_type, temp_id)?
+        }
+        AssignTarget::Deref(inner) => {
+            format!("*{}", emit_expr(inner, env, None, func_returns, fn_return_type, temp_id)?)
         }
     })
 }
@@ -1850,6 +1915,12 @@ fn emit_expr(
                 }
             }
             emit_field_access(base, field, env, func_returns, fn_return_type, temp_id)?
+        }
+        Expr::Deref(inner) => {
+            format!(
+                "(*{})",
+                emit_expr(inner, env, None, func_returns, fn_return_type, temp_id)?
+            )
         }
         Expr::Orelse { left, right } => {
             let inner = expr_type(left, env, func_returns)

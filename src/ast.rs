@@ -280,7 +280,10 @@ pub enum Stmt {
     ForArray {
         label: Option<String>,
         capture: Option<String>,
+        ptr_capture: bool,
+        idx_capture: Option<String>,
         array: String,
+        ptr_iter: bool,
         body: Vec<Stmt>,
     },
     Switch {
@@ -306,6 +309,7 @@ pub enum AssignTarget {
         base: Box<Expr>,
         field: String,
     },
+    Deref(Box<Expr>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

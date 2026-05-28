@@ -515,39 +515,117 @@ impl Parser {
     fn parse_for_stmt(&mut self, label: Option<String>) -> Result<Stmt, String> {
         self.advance();
         self.expect(TokenKind::LParen)?;
+
+        // Check for `&array` (pointer iteration)
+        let ptr_iter = if self.check(&TokenKind::Amp) {
+            self.advance();
+            true
+        } else {
+            false
+        };
+
         let first = self.parse_expr()?;
-        if self.check(&TokenKind::DotDot) {
+
+        // ForRange: for (start..end) |i|  (only when not ptr_iter)
+        if !ptr_iter && self.check(&TokenKind::DotDot) {
             self.advance();
             let end = self.parse_expr()?;
             self.expect(TokenKind::RParen)?;
             let capture = self.parse_for_capture()?;
             let body = self.parse_for_body()?;
-            Ok(Stmt::ForRange {
+            return Ok(Stmt::ForRange {
                 label,
                 capture,
                 start: first,
                 end,
                 body,
-            })
-        } else {
-            let array = match first {
-                Expr::Var(name) => name,
-                other => {
-                    return Err(format!(
-                        "expected array identifier in for-loop, found {other:?}"
-                    ))
-                }
-            };
-            self.expect(TokenKind::RParen)?;
-            let capture = self.parse_for_capture()?;
-            let body = self.parse_for_body()?;
-            Ok(Stmt::ForArray {
-                label,
-                capture,
-                array,
-                body,
-            })
+            });
         }
+
+        // Check for `, 0..` (index capture secondary iterable)
+        let has_idx = if self.check(&TokenKind::Comma) {
+            self.advance();
+            match self.peek_kind() {
+                TokenKind::Int(0) => { self.advance(); }
+                other => return Err(format!("expected 0 after comma in for-loop, found {other:?}")),
+            }
+            self.expect(TokenKind::DotDot)?;
+            true
+        } else {
+            false
+        };
+
+        self.expect(TokenKind::RParen)?;
+
+        let array = match first {
+            Expr::Var(name) => name,
+            other => {
+                return Err(format!(
+                    "expected array identifier in for-loop, found {other:?}"
+                ))
+            }
+        };
+
+        let (capture, ptr_capture, idx_capture) = self.parse_for_captures_extended(has_idx)?;
+        let body = self.parse_for_body()?;
+
+        Ok(Stmt::ForArray {
+            label,
+            capture,
+            ptr_capture,
+            idx_capture,
+            array,
+            ptr_iter,
+            body,
+        })
+    }
+
+    /// Parse `|cap|`, `|*cap|`, `|*cap, idx|`, `|cap, idx|`, etc.
+    fn parse_for_captures_extended(
+        &mut self,
+        expect_idx: bool,
+    ) -> Result<(Option<String>, bool, Option<String>), String> {
+        self.expect(TokenKind::Pipe)?;
+
+        // First capture: `*name`, `name`, or `_`
+        let (capture, ptr_capture) = if self.check(&TokenKind::Star) {
+            self.advance();
+            let name = self.expect_ident()?;
+            (Some(name), true)
+        } else {
+            match self.peek_kind() {
+                TokenKind::Ident(name) if name == "_" => {
+                    self.advance();
+                    (None, false)
+                }
+                TokenKind::Ident(name) => {
+                    self.advance();
+                    (Some(name), false)
+                }
+                other => return Err(format!("expected capture identifier, found {other:?}")),
+            }
+        };
+
+        // Optional second capture (index)
+        let idx_capture = if expect_idx {
+            self.expect(TokenKind::Comma)?;
+            match self.peek_kind() {
+                TokenKind::Ident(name) if name == "_" => {
+                    self.advance();
+                    None
+                }
+                TokenKind::Ident(name) => {
+                    self.advance();
+                    Some(name)
+                }
+                other => return Err(format!("expected index capture, found {other:?}")),
+            }
+        } else {
+            None
+        };
+
+        self.expect(TokenKind::Pipe)?;
+        Ok((capture, ptr_capture, idx_capture))
     }
 
     fn parse_for_body(&mut self) -> Result<Vec<Stmt>, String> {
@@ -583,6 +661,12 @@ impl Parser {
         while self.check(&TokenKind::LBracket) || self.check(&TokenKind::Dot) {
             if self.check(&TokenKind::Dot) {
                 self.advance();
+                // `ptr.*` — pointer dereference lvalue
+                if self.check(&TokenKind::Star) {
+                    self.advance();
+                    target_expr = Expr::Deref(Box::new(target_expr));
+                    break; // dereference is always the final target
+                }
                 let field = self.expect_ident()?;
                 target_expr = Expr::FieldAccess {
                     base: Box::new(target_expr),
@@ -642,6 +726,7 @@ impl Parser {
             Expr::Var(name) => AssignTarget::Name(name),
             Expr::Index { base, index } => AssignTarget::Index { base, index },
             Expr::FieldAccess { base, field } => AssignTarget::Field { base, field },
+            Expr::Deref(inner) => AssignTarget::Deref(inner),
             other => {
                 return Err(format!(
                     "expected variable or indexed lvalue, found {other:?}"
@@ -708,6 +793,7 @@ impl Parser {
                     base: base.clone(),
                     field: field.clone(),
                 },
+                AssignTarget::Deref(inner) => Expr::Deref(inner.clone()),
             };
             Expr::BinOp {
                 op: op.unwrap(),
@@ -1008,6 +1094,12 @@ impl Parser {
         loop {
             if self.check(&TokenKind::Dot) {
                 self.advance();
+                // `expr.*` — pointer dereference
+                if self.check(&TokenKind::Star) {
+                    self.advance();
+                    expr = Expr::Deref(Box::new(expr));
+                    continue;
+                }
                 let field = self.expect_ident()?;
                 if let Expr::Var(err_set) = &expr {
                     if self.error_sets.contains_key(err_set) {
@@ -1934,6 +2026,9 @@ fn infer_expr_type(
         ),
         Expr::EmptyInit => Type::Void,
         Expr::FieldAccess { base, field } => field_type(base, field, enums, structs, unions, locals),
+        Expr::Deref(inner) => infer_expr_type(inner, enums, structs, unions, locals, functions)
+            .pointee()
+            .unwrap_or(Type::Int(IntType::U8)),
         Expr::Orelse { right, .. } => infer_expr_type(right, enums, structs, unions, locals, functions),
     }
 }
