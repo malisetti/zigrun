@@ -160,7 +160,12 @@ pub enum Stmt {
         then_branch: Vec<Stmt>,
         else_branch: Option<Vec<Stmt>>,
     },
-    While { cond: Expr, body: Vec<Stmt> },
+    While {
+        cond: Expr,
+        body: Vec<Stmt>,
+        /// Zig `while (cond) : (continue_expr)` — run after each iteration.
+        continue_stmt: Option<Box<Stmt>>,
+    },
     Break,
     Continue,
     ForRange {

@@ -132,10 +132,17 @@ fn collect_optional_in_stmt(stmt: &Stmt, add: &mut dyn FnMut(&Type)) {
                 }
             }
         }
-        Stmt::While { cond, body } => {
+        Stmt::While {
+            cond,
+            body,
+            continue_stmt,
+        } => {
             collect_optional_in_expr(cond, add);
             for s in body {
                 collect_optional_in_stmt(s, add);
+            }
+            if let Some(cs) = continue_stmt {
+                collect_optional_in_stmt(cs, add);
             }
         }
         Stmt::ForRange { start, end, body, .. } => {
@@ -503,10 +510,17 @@ fn emit_stmt(
             }
             out.push('\n');
         }
-        Stmt::While { cond, body } => {
+        Stmt::While {
+            cond,
+            body,
+            continue_stmt,
+        } => {
             let _ = writeln!(out, "while ({}) {{", emit_expr(cond, env, None, layouts)?);
             for s in body {
                 emit_stmt(out, s, depth + 1, env, return_type, layouts)?;
+            }
+            if let Some(cs) = continue_stmt {
+                emit_stmt(out, cs, depth + 1, env, return_type, layouts)?;
             }
             indent(out, depth);
             out.push_str("}\n");

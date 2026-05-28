@@ -248,8 +248,21 @@ impl Parser {
                 self.expect(TokenKind::LParen)?;
                 let cond = self.parse_expr()?;
                 self.expect(TokenKind::RParen)?;
+                let continue_stmt = if self.check(&TokenKind::Colon) {
+                    self.advance();
+                    self.expect(TokenKind::LParen)?;
+                    let stmt = self.parse_inline_assign()?;
+                    self.expect(TokenKind::RParen)?;
+                    Some(Box::new(stmt))
+                } else {
+                    None
+                };
                 let body = self.parse_block()?;
-                Ok(Stmt::While { cond, body })
+                Ok(Stmt::While {
+                    cond,
+                    body,
+                    continue_stmt,
+                })
             }
             TokenKind::Break => {
                 self.advance();
@@ -320,8 +333,17 @@ impl Parser {
         Ok(capture)
     }
 
+    fn parse_inline_assign(&mut self) -> Result<Stmt, String> {
+        let name = self.expect_ident()?;
+        self.parse_assign_from_name(name, false)
+    }
+
     fn parse_assign_stmt(&mut self, name: String) -> Result<Stmt, String> {
         self.advance();
+        self.parse_assign_from_name(name, true)
+    }
+
+    fn parse_assign_from_name(&mut self, name: String, expect_semicolon: bool) -> Result<Stmt, String> {
         let mut target_expr = Expr::Var(name);
         while self.check(&TokenKind::LBracket) {
             self.advance();
@@ -369,7 +391,9 @@ impl Parser {
             other => return Err(format!("expected assignment operator, found {other:?}")),
         };
         let rhs = self.parse_expr()?;
-        self.expect(TokenKind::Semicolon)?;
+        if expect_semicolon {
+            self.expect(TokenKind::Semicolon)?;
+        }
         let value = if is_compound {
             let left = match &target {
                 AssignTarget::Name(name) => Expr::Var(name.clone()),
