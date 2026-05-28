@@ -1127,11 +1127,11 @@ fn emit_stmt(
                 c_label
             });
             let _ = writeln!(out, "for (size_t {idx} = 0; {idx} < {len}; {idx}++) {{");
-            let _ = writeln!(
-                out,
-                "    {} {cap} = {array}[{idx}];",
-                c_type(&elem_ty)
-            );
+            let cap_decl = match &elem_ty {
+                Type::Array { .. } => format!("{} *{cap} = {array}[{idx}]", c_array_base(&elem_ty)),
+                _ => format!("{} {cap} = {array}[{idx}]", c_type(&elem_ty)),
+            };
+            let _ = writeln!(out, "    {cap_decl};");
             if let Some(name) = capture {
                 env.insert(name.clone(), elem_ty.clone());
             }
