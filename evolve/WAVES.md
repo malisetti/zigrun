@@ -38,6 +38,7 @@ durable state — stop and resume any time.
 - [x] structmethod_s2 | oracle/structmethod_s2.zig | ladder step for 'structmethod' (real zig=42) (landed autonomously vs real zig)
 - [x] errorunion_s5 | oracle/errorunion_s5.zig | ladder step for 'errorunion' (real zig=120) (landed autonomously vs real zig)
 - [x] errorset_s2 | oracle/errorset_s2.zig | ladder step for 'errorset' (real zig=60) (landed autonomously vs real zig)
+- [x] taggedunion_s1 | oracle/taggedunion_s1.zig | ladder step for 'taggedunion' (real zig=7) (landed autonomously vs real zig)
 
 ## Frontier (pending — each is real Zig that zigrun must learn to match)
 - [ ] bitwise | oracle/pending/bitwise.zig | self-discovered atomic gap (real zig=35)
@@ -49,7 +50,6 @@ durable state — stop and resume any time.
 - [ ] loops | oracle/pending/loops.zig | self-discovered atomic gap (real zig=26)
 - [ ] taggedunion_s4 | oracle/pending/taggedunion_s4.zig | ladder step for 'taggedunion' (real zig=56)
 - [ ] taggedunion_s2 | oracle/pending/taggedunion_s2.zig | ladder step for 'taggedunion' (real zig=10)
-- [ ] taggedunion_s1 | oracle/pending/taggedunion_s1.zig | ladder step for 'taggedunion' (real zig=7)
 - [ ] structmethod_s5 | oracle/pending/structmethod_s5.zig | ladder step for 'structmethod' (real zig=14)
 - [ ] structmethod_s4 | oracle/pending/structmethod_s4.zig | ladder step for 'structmethod' (real zig=8)
 - [ ] structmethod_s3 | oracle/pending/structmethod_s3.zig | ladder step for 'structmethod' (real zig=50)

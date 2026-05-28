@@ -789,8 +789,20 @@ fn field_expr_type(base: &Expr, field: &str, env: &HashMap<String, Type>) -> Typ
         Expr::StructLiteral { struct_name, .. } => Some(Type::Struct(struct_name.clone())),
         _ => None,
     };
-    // Field types are resolved from struct layout at emit time; use u8 fallback for inference.
-    let _ = (base_ty, field);
+    if let Some(Type::Union(ref union_name)) = base_ty {
+        if let Some(udef) = lookup_union(union_name) {
+            if let Ok(ty) = union_variant_payload_type(&udef, field) {
+                return ty;
+            }
+        }
+    }
+    if let Some(sn) = base_ty.and_then(|t| t.struct_name().map(str::to_string)) {
+        if let Some(sdef) = lookup_struct(&sn) {
+            if let Some((_, ty)) = sdef.fields.iter().find(|(f, _)| f == field) {
+                return ty.clone();
+            }
+        }
+    }
     Type::Int(IntType::U8)
 }
 
@@ -1744,10 +1756,22 @@ fn emit_expr(
         }
         Expr::EmptyInit => return Err("empty init has no runtime value".to_string()),
         Expr::FieldAccess { base, field } => {
-            format!(
-                "({}).{field}",
-                emit_expr(base, env, None, func_returns, fn_return_type, temp_id)?
-            )
+            let base_s =
+                emit_expr(base, env, None, func_returns, fn_return_type, temp_id)?;
+            if let Type::Union(union_name) = expr_type(base, env, func_returns) {
+                if let Some(udef) = lookup_union(&union_name) {
+                    if udef.variants.iter().any(|v| v.name == *field) {
+                        let payload_ty = union_variant_payload_type(&udef, field)?;
+                        let cap_ct = c_type(&payload_ty);
+                        let payload_ct = union_payload_c_type(&udef.variants);
+                        if cap_ct == payload_ct {
+                            return Ok(format!("({base_s}).payload"));
+                        }
+                        return Ok(format!("(({cap_ct})({base_s}).payload)"));
+                    }
+                }
+            }
+            format!("({base_s}).{field}")
         }
         Expr::Orelse { left, right } => {
             let inner = expr_type(left, env, func_returns)
