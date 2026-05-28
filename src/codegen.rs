@@ -877,6 +877,13 @@ fn emit_stmt(
             env.insert(name.clone(), ty.clone());
         }
         Stmt::Assign { target, value } => {
+            if let AssignTarget::Name(n) = target {
+                if n == "_" {
+                    let val_s = emit_expr(value, env, None, func_returns, return_type, temp_id)?;
+                    let _ = writeln!(out, "(void)({val_s});");
+                    return Ok(());
+                }
+            }
             let ty = assign_target_type(target, env);
             let lhs = emit_assign_target(target, env, func_returns, return_type, temp_id)?;
             let _ = writeln!(
