@@ -26,7 +26,7 @@ fi
 
 exec "$NF" orch frontier-run \
   --frontier-file zigrun/evolve/WAVES.md \
-  --skip-missing-under zigrun/oracle/pending \
+  --skip-missing-under zigrun \
   --impl-objective @zigrun/evolve/impl-objective.template.md \
   --gate-command 'bash zigrun/evolve/gate_one.sh ${item_id}' \
   --integrate-command 'bash zigrun/evolve/land_one.sh ${item_id}' \
