@@ -538,6 +538,26 @@ impl Parser {
                 self.advance();
                 (Some(BinOp::Mod), true)
             }
+            TokenKind::AmpAssign => {
+                self.advance();
+                (Some(BinOp::BitAnd), true)
+            }
+            TokenKind::PipeAssign => {
+                self.advance();
+                (Some(BinOp::BitOr), true)
+            }
+            TokenKind::CaretAssign => {
+                self.advance();
+                (Some(BinOp::BitXor), true)
+            }
+            TokenKind::ShlAssign => {
+                self.advance();
+                (Some(BinOp::Shl), true)
+            }
+            TokenKind::ShrAssign => {
+                self.advance();
+                (Some(BinOp::Shr), true)
+            }
             other => return Err(format!("expected assignment operator, found {other:?}")),
         };
         let rhs = self.parse_expr()?;
@@ -571,6 +591,11 @@ impl Parser {
                 TokenKind::StarAssign => Some(BinOp::Mul),
                 TokenKind::SlashAssign => Some(BinOp::Div),
                 TokenKind::PercentAssign => Some(BinOp::Mod),
+                TokenKind::AmpAssign => Some(BinOp::BitAnd),
+                TokenKind::PipeAssign => Some(BinOp::BitOr),
+                TokenKind::CaretAssign => Some(BinOp::BitXor),
+                TokenKind::ShlAssign => Some(BinOp::Shl),
+                TokenKind::ShrAssign => Some(BinOp::Shr),
                 _ => None,
             };
             if let Some(op) = compound {

@@ -56,10 +56,15 @@ pub enum TokenKind {
     SlashAssign,
     PercentAssign,
     Amp,
+    AmpAssign,
     Pipe,
+    PipeAssign,
     Caret,
+    CaretAssign,
     Shl,
+    ShlAssign,
     Shr,
+    ShrAssign,
     LParen,
     RParen,
     LBrace,
@@ -163,9 +168,27 @@ impl<'a> Lexer<'a> {
                     TokenKind::Percent
                 }
             }
-            '&' => TokenKind::Amp,
-            '|' => TokenKind::Pipe,
-            '^' => TokenKind::Caret,
+            '&' => {
+                if self.eat('=') {
+                    TokenKind::AmpAssign
+                } else {
+                    TokenKind::Amp
+                }
+            }
+            '|' => {
+                if self.eat('=') {
+                    TokenKind::PipeAssign
+                } else {
+                    TokenKind::Pipe
+                }
+            }
+            '^' => {
+                if self.eat('=') {
+                    TokenKind::CaretAssign
+                } else {
+                    TokenKind::Caret
+                }
+            }
             '(' => TokenKind::LParen,
             ')' => TokenKind::RParen,
             '{' => TokenKind::LBrace,
@@ -185,7 +208,11 @@ impl<'a> Lexer<'a> {
             }
             '<' => {
                 if self.eat('<') {
-                    TokenKind::Shl
+                    if self.eat('=') {
+                        TokenKind::ShlAssign
+                    } else {
+                        TokenKind::Shl
+                    }
                 } else if self.eat('=') {
                     TokenKind::Le
                 } else {
@@ -194,7 +221,11 @@ impl<'a> Lexer<'a> {
             }
             '>' => {
                 if self.eat('>') {
-                    TokenKind::Shr
+                    if self.eat('=') {
+                        TokenKind::ShrAssign
+                    } else {
+                        TokenKind::Shr
+                    }
                 } else if self.eat('=') {
                     TokenKind::Ge
                 } else {
@@ -216,10 +247,72 @@ impl<'a> Lexer<'a> {
 
     fn read_int(&mut self) -> Result<TokenKind, String> {
         let start = self.pos;
-        while self.pos < self.input.len() && (self.input[self.pos] as char).is_ascii_digit() {
+        // Check for 0b (binary) or 0x (hex) prefix
+        if self.input[self.pos] == b'0'
+            && self.pos + 1 < self.input.len()
+        {
+            let next = self.input[self.pos + 1] as char;
+            if next == 'b' || next == 'B' {
+                self.pos += 2;
+                let mut value: u64 = 0;
+                let mut has_digit = false;
+                while self.pos < self.input.len() {
+                    match self.input[self.pos] as char {
+                        '0' | '1' => {
+                            value = value * 2 + (self.input[self.pos] - b'0') as u64;
+                            has_digit = true;
+                            self.pos += 1;
+                        }
+                        '_' => { self.pos += 1; }
+                        _ => break,
+                    }
+                }
+                if !has_digit {
+                    return Err("empty binary literal".to_string());
+                }
+                return Ok(TokenKind::Int(value));
+            } else if next == 'x' || next == 'X' {
+                self.pos += 2;
+                let mut value: u64 = 0;
+                let mut has_digit = false;
+                while self.pos < self.input.len() {
+                    match self.input[self.pos] as char {
+                        c @ '0'..='9' => {
+                            value = value * 16 + (c as u64 - '0' as u64);
+                            has_digit = true;
+                            self.pos += 1;
+                        }
+                        c @ 'a'..='f' => {
+                            value = value * 16 + (c as u64 - 'a' as u64 + 10);
+                            has_digit = true;
+                            self.pos += 1;
+                        }
+                        c @ 'A'..='F' => {
+                            value = value * 16 + (c as u64 - 'A' as u64 + 10);
+                            has_digit = true;
+                            self.pos += 1;
+                        }
+                        '_' => { self.pos += 1; }
+                        _ => break,
+                    }
+                }
+                if !has_digit {
+                    return Err("empty hex literal".to_string());
+                }
+                return Ok(TokenKind::Int(value));
+            }
+        }
+        while self.pos < self.input.len()
+            && ((self.input[self.pos] as char).is_ascii_digit()
+                || self.input[self.pos] == b'_')
+        {
             self.pos += 1;
         }
-        let text = std::str::from_utf8(&self.input[start..self.pos]).unwrap();
+        let text: String = std::str::from_utf8(&self.input[start..self.pos])
+            .unwrap()
+            .chars()
+            .filter(|c| *c != '_')
+            .collect();
         let value: u64 = text
             .parse()
             .map_err(|_| format!("integer literal out of u64 range: {text}"))?;
