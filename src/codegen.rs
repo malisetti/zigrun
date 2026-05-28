@@ -142,6 +142,14 @@ fn union_tag_c_type(union: &UnionDef) -> String {
         .unwrap_or_else(|| format!("{}_tag", union.name))
 }
 
+fn union_variant_payload_type(u: &UnionDef, variant: &str) -> Result<Type, String> {
+    u.variants
+        .iter()
+        .find(|v| v.name == variant)
+        .and_then(|v| v.payload.clone())
+        .ok_or_else(|| format!("unknown union variant {variant:?} for {}", u.name))
+}
+
 fn union_payload_c_type(variants: &[UnionVariant]) -> String {
     let mut payload = "uint8_t".to_string();
     for v in variants {
@@ -257,6 +265,15 @@ fn collect_optionals_in_expr(expr: &Expr, add: &mut dyn FnMut(&Type)) {
         Expr::Catch { expr, fallback } | Expr::CatchReturn { expr, ret_val: fallback } => {
             collect_optionals_in_expr(expr, add);
             collect_optionals_in_expr(fallback, add);
+        }
+        Expr::If {
+            cond,
+            then_expr,
+            else_expr,
+        } => {
+            collect_optionals_in_expr(cond, add);
+            collect_optionals_in_expr(then_expr, add);
+            collect_optionals_in_expr(else_expr, add);
         }
         Expr::Switch {
             scrutinee,
@@ -388,6 +405,15 @@ fn collect_error_unions_in_expr(expr: &Expr, add: &mut dyn FnMut(&Type)) {
         Expr::Catch { expr, fallback } | Expr::CatchReturn { expr, ret_val: fallback } => {
             collect_error_unions_in_expr(expr, add);
             collect_error_unions_in_expr(fallback, add);
+        }
+        Expr::If {
+            cond,
+            then_expr,
+            else_expr,
+        } => {
+            collect_error_unions_in_expr(cond, add);
+            collect_error_unions_in_expr(then_expr, add);
+            collect_error_unions_in_expr(else_expr, add);
         }
         Expr::Switch {
             scrutinee,
@@ -676,6 +702,14 @@ fn expr_type(expr: &Expr, env: &HashMap<String, Type>, func_returns: &HashMap<St
             .get(name)
             .cloned()
             .unwrap_or(Type::Int(IntType::U8)),
+        Expr::If {
+            then_expr,
+            else_expr,
+            ..
+        } => combine_types(
+            expr_type(then_expr, env, func_returns),
+            expr_type(else_expr, env, func_returns),
+        ),
         Expr::Switch { default, arms, .. } => default
             .as_ref()
             .map(|d| expr_type(d, env, func_returns))
@@ -1105,7 +1139,7 @@ fn emit_stmt(
                         .ok_or_else(|| format!("unknown union {union_name}"))?;
                     let mut first = true;
                     for arm in arms {
-                        let SwitchTag::UnionVariant { variant, .. } = &arm.tag else {
+                        let SwitchTag::UnionVariant { variant, capture, .. } = &arm.tag else {
                             return Err("union switch requires union variant arms".to_string());
                         };
                         let tag = c_union_tag(&udef, variant);
@@ -1116,8 +1150,23 @@ fn emit_stmt(
                             indent(out, depth);
                             let _ = writeln!(out, "}} else if (({scrut_s}).tag == {tag}) {{");
                         }
+                        let mut arm_env = env.clone();
+                        if let Some(cap) = capture {
+                            let payload_ty =
+                                union_variant_payload_type(&udef, variant)?;
+                            let cap_ct = c_type(&payload_ty);
+                            let payload_ct = union_payload_c_type(&udef.variants);
+                            let bind = if cap_ct == payload_ct {
+                                format!("{cap_ct} {cap} = ({scrut_s}).payload")
+                            } else {
+                                format!("{cap_ct} {cap} = ({cap_ct})({scrut_s}).payload")
+                            };
+                            indent(out, depth + 1);
+                            let _ = writeln!(out, "{bind};");
+                            arm_env.insert(cap.clone(), payload_ty);
+                        }
                         for s in &arm.body {
-                            emit_stmt(out, s, depth + 1, env, return_type, func_returns, temp_id, loop_cont, loop_break_labels)?;
+                            emit_stmt(out, s, depth + 1, &mut arm_env, return_type, func_returns, temp_id, loop_cont, loop_break_labels)?;
                         }
                     }
                     if !arms.is_empty() {
@@ -1327,6 +1376,44 @@ fn emit_expr(
                     )?
                 )
             }
+        }
+        Expr::If {
+            cond,
+            then_expr,
+            else_expr,
+        } => {
+            let ty = combine_types(
+                expr_type(then_expr, env, func_returns),
+                expr_type(else_expr, env, func_returns),
+            );
+            let expected_ty = expected.cloned().unwrap_or(ty);
+            format!(
+                "({} ? {} : {})",
+                emit_expr(
+                    cond,
+                    env,
+                    Some(&Type::Bool),
+                    func_returns,
+                    fn_return_type,
+                    temp_id,
+                )?,
+                emit_expr(
+                    then_expr,
+                    env,
+                    Some(&expected_ty),
+                    func_returns,
+                    fn_return_type,
+                    temp_id,
+                )?,
+                emit_expr(
+                    else_expr,
+                    env,
+                    Some(&expected_ty),
+                    func_returns,
+                    fn_return_type,
+                    temp_id,
+                )?
+            )
         }
         Expr::Switch {
             scrutinee,
@@ -1744,10 +1831,17 @@ fn emit_union_switch(
             temp_id,
         )?;
         if let Some(cap) = capture {
-            let cap_ct = c_type(&Type::Int(IntType::U32));
+            let payload_ty = union_variant_payload_type(&udef, variant)?;
+            let cap_ct = c_type(&payload_ty);
+            let payload_ct = union_payload_c_type(&udef.variants);
+            let bind = if cap_ct == payload_ct {
+                format!("{cap_ct} {cap} = ({s}).payload")
+            } else {
+                format!("{cap_ct} {cap} = ({cap_ct})({s}).payload")
+            };
             let _ = writeln!(
                 out,
-                "    if (({s}).tag == {tag}) {{ {cap_ct} {cap} = ({s}).payload; _zig_switch_result = {arm_expr}; }}"
+                "    if (({s}).tag == {tag}) {{ {bind}; _zig_switch_result = {arm_expr}; }}"
             );
         } else {
             let _ = writeln!(

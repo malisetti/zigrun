@@ -963,6 +963,20 @@ impl Parser {
                 self.advance();
                 Ok(Expr::Int(n as i64))
             }
+            TokenKind::If => {
+                self.advance();
+                self.expect(TokenKind::LParen)?;
+                let cond = self.parse_expr()?;
+                self.expect(TokenKind::RParen)?;
+                let then_expr = self.parse_expr()?;
+                self.expect(TokenKind::Else)?;
+                let else_expr = self.parse_expr()?;
+                Ok(Expr::If {
+                    cond: Box::new(cond),
+                    then_expr: Box::new(then_expr),
+                    else_expr: Box::new(else_expr),
+                })
+            }
             TokenKind::Switch => self.parse_switch(),
             TokenKind::LParen => {
                 self.advance();
@@ -1246,12 +1260,28 @@ impl Parser {
                 self.advance();
                 let variant = self.expect_ident()?;
                 if let Some(ref union_name) = scrutinee_union {
+                    if !self.unions.get(union_name).is_some_and(|vs| {
+                        vs.iter().any(|v| v.name == variant)
+                    }) {
+                        return Err(format!(
+                            "unknown variant {variant:?} for union {union_name:?}"
+                        ));
+                    }
                     SwitchTag::UnionVariant {
                         union_name: union_name.clone(),
                         variant,
                         capture: None,
                     }
                 } else if let Some(ref enum_name) = scrutinee_enum {
+                    if !self
+                        .enums
+                        .get(enum_name)
+                        .is_some_and(|vs| vs.iter().any(|v| v == &variant))
+                    {
+                        return Err(format!(
+                            "unknown variant {variant:?} for enum {enum_name:?}"
+                        ));
+                    }
                     SwitchTag::EnumVariant {
                         enum_name: enum_name.clone(),
                         variant,
@@ -1267,6 +1297,18 @@ impl Parser {
                 SwitchTag::Int(val)
             };
             self.expect(TokenKind::FatArrow)?;
+            let tag = match tag {
+                SwitchTag::UnionVariant {
+                    union_name,
+                    variant,
+                    ..
+                } => SwitchTag::UnionVariant {
+                    union_name,
+                    variant,
+                    capture: self.parse_switch_capture()?,
+                },
+                other => other,
+            };
             let body = if self.check(&TokenKind::LBrace) {
                 self.parse_block()?
             } else {
@@ -1403,6 +1445,20 @@ fn infer_expr_type(
                 }
             }
         },
+        Expr::If {
+            then_expr,
+            else_expr,
+            ..
+        } => {
+            let lt = infer_expr_type(then_expr, enums, structs, unions, locals, functions);
+            let rt = infer_expr_type(else_expr, enums, structs, unions, locals, functions);
+            match (lt, rt) {
+                (Type::Int(a), Type::Int(b)) => Type::Int(wider_int_type(a, b)),
+                (Type::Int(a), _) => Type::Int(a),
+                (_, Type::Int(b)) => Type::Int(b),
+                (other, _) => other,
+            }
+        }
         Expr::Switch { default, .. } => default
             .as_ref()
             .map(|d| infer_expr_type(d, enums, structs, unions, locals, functions))

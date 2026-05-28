@@ -362,6 +362,11 @@ pub enum Expr {
         left: Box<Expr>,
         right: Box<Expr>,
     },
+    If {
+        cond: Box<Expr>,
+        then_expr: Box<Expr>,
+        else_expr: Box<Expr>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
