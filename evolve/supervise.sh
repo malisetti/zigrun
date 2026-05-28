@@ -1,12 +1,9 @@
 #!/usr/bin/env bash
 # Long-running PROGRESS supervisor for the zigrun self-driving loop.
 #
-# MODE=frontier (default): Cursor implementer fleet + cursor local-integrator;
-# restarts zigrun/evolve/frontier_run.sh (nfltr orch frontier-run).
+# MODE=frontier (default): six cursor implementers (max-tasks=1 each) +
+# cursor local-integrator; restarts frontier_run.sh until budget.
 # MODE=land_wave: legacy autoloop.sh + land_wave.py continuous dispatch.
-#
-# Every ~8 min: respawn dead workers, restart the driver if it died, re-kick
-# the fleet if no wave has landed in ~24 min (3 checks × 8 min).
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 2          # zigrun/
 REPO_ROOT="$(cd .. && pwd)"
@@ -16,7 +13,8 @@ LOGD=../out/fleet; mkdir -p "$LOGD"
 CHECK=480
 BUDGET="${SUP_BUDGET:-14400}"
 MODE="${MODE:-frontier}"
-BATCH_SIZE="${FRONTIER_BATCH_SIZE:-4}"
+# One pending wave per cursor worker per batch (fleet size = 6).
+BATCH_SIZE="${FRONTIER_BATCH_SIZE:-6}"
 start=$(date +%s)
 now() { date +%H:%M; }
 
@@ -25,7 +23,7 @@ spawn_cursor() { # name
   echo "[$(now)] respawn $1"
   nohup "$NF" worker --name "$1" --api-key "$KEY" --flavor cursor \
     --labels model=composer-2.5,tier=heavy,flavor=cursor \
-    --execution-roles implementer,verifier,reducer --max-tasks 4 --per-task-worktree \
+    --execution-roles implementer,verifier,reducer --max-tasks 1 --per-task-worktree \
     --heartbeat-interval 15s \
     --mcp-command "nfltr cursor-mcp --cursor-command cursor-agent --model composer-2.5 --git-code-result --max-verifier-turns 5" \
     > "$LOGD/$1.log" 2>&1 &
@@ -46,6 +44,9 @@ fleet_up() {
   spawn_cursor native-actor-0
   spawn_cursor native-actor-1
   spawn_cursor native-actor-2
+  spawn_cursor native-actor-3
+  spawn_cursor native-actor-4
+  spawn_cursor native-actor-5
   if [ "$MODE" = "frontier" ]; then
     spawn_integrator
   fi
@@ -69,7 +70,7 @@ rekick() {
 landed() { grep -c "^- \[x\]" evolve/WAVES.md; }
 
 frontier_driver_up() {
-  if pgrep -f "orch frontier-run" >/dev/null || pgrep -f "evolve/frontier_run.sh" >/dev/null; then
+  if pgrep -f "evolve/frontier_run.sh" >/dev/null; then
     return
   fi
   local pending
@@ -79,14 +80,15 @@ frontier_driver_up() {
     return
   fi
   local rem=$(( BUDGET - ($(date +%s) - start) ))
-  echo "[$(now)] frontier-run start: pending=$pending batch=$BATCH_SIZE (remaining ${rem}s)"
-  echo "===== $(date) supervise.sh starting frontier-run (cursor-only, pending=$pending) =====" \
+  echo "[$(now)] frontier-run start: pending=$pending batch=$BATCH_SIZE fleet=6 (remaining ${rem}s)"
+  echo "===== $(date) supervise.sh starting frontier_run (6x cursor, pending=$pending) =====" \
     >> "$REPO_ROOT/out/frontier-run.log"
   (
     cd "$REPO_ROOT" || exit 2
     export REPO_ROOT
     export FRONTIER_BATCH_SIZE="$BATCH_SIZE"
-    export FRONTIER_BUDGET="${rem}s"
+    export FRONTIER_CONCURRENCY="$BATCH_SIZE"
+    export FRONTIER_BUDGET_SEC="$rem"
     nohup bash zigrun/evolve/frontier_run.sh >> "$REPO_ROOT/out/frontier-run.log" 2>&1 &
   )
 }
@@ -101,7 +103,7 @@ autoloop_up() {
 }
 
 last=$(landed); stall=0
-echo "[$(now)] supervisor start (mode=$MODE, cursor-only): landed=$last budget=${BUDGET}s"
+echo "[$(now)] supervisor start (mode=$MODE, cursor x6): landed=$last budget=${BUDGET}s"
 
 while [ $(( $(date +%s) - start )) -lt "$BUDGET" ]; do
   fleet_up
