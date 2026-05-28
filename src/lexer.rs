@@ -38,6 +38,7 @@ pub enum TokenKind {
     DotDot,
     Ellipsis,
     Ident(String),
+    StringLit(String),
     Int(u64),
     At,
     Plus,
@@ -119,6 +120,9 @@ impl<'a> Lexer<'a> {
 
         if ch.is_ascii_digit() {
             return self.read_int();
+        }
+        if ch == '"' {
+            return self.read_string();
         }
         if ch.is_ascii_alphabetic() || ch == '_' {
             return Ok(self.read_ident());
@@ -249,6 +253,34 @@ impl<'a> Lexer<'a> {
             other => return Err(format!("unexpected character {other:?}")),
         };
         Ok(kind)
+    }
+
+    fn read_string(&mut self) -> Result<TokenKind, String> {
+        self.pos += 1; // opening "
+        let mut out = String::new();
+        while self.pos < self.input.len() {
+            let ch = self.input[self.pos] as char;
+            if ch == '"' {
+                self.pos += 1;
+                return Ok(TokenKind::StringLit(out));
+            }
+            if ch == '\\' && self.pos + 1 < self.input.len() {
+                self.pos += 1;
+                let esc = self.input[self.pos] as char;
+                out.push(match esc {
+                    'n' => '\n',
+                    't' => '\t',
+                    '\\' => '\\',
+                    '"' => '"',
+                    other => other,
+                });
+                self.pos += 1;
+                continue;
+            }
+            out.push(ch);
+            self.pos += 1;
+        }
+        Err("unterminated string literal".to_string())
     }
 
     fn read_int(&mut self) -> Result<TokenKind, String> {

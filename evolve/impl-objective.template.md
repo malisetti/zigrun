@@ -1,14 +1,23 @@
 Implement feature WAVE '${item_id}' for zigrun, a Zig-subset COMPILER in Rust
-(crate at zigrun/). zigrun lowers Zig to C and runs it via cc; main()'s return
-is the exit code, and stdout is compared too. Work from the CURRENT repo (do
-NOT `git reset --hard origin/main`). Read zigrun/src/*.rs and zigrun/oracle/diff.sh.
+(crate at zigrun/). zigrun lowers Zig to C and runs it via cc. Work from the
+CURRENT repo (do NOT `git reset --hard origin/main`). Read zigrun/src/*.rs and
+zigrun/oracle/diff.sh.
+
+## North star (project goal)
+The evolution loop is driving zigrun until **Hello, world!** works:
+`bash zigrun/oracle/diff.sh helloworld` must be DIFFERENTIAL GREEN vs real Zig
+(exit code + stdout + stderr). See zigrun/evolve/GOAL.md.
 
 WAVE: ${item_id} — ${objective}
 
 Target ${path} — make your zigrun match REAL zig on it. Implement across
 zigrun/src (lexer/ast/parser/codegen) WITHOUT breaking any existing oracle
-program. Promote: `git mv ${path} zigrun/oracle/${item_id}.zig` and add
-'${item_id}' to the default suite in zigrun/oracle/check.sh AND zigrun/oracle/diff.sh.
+program. For I/O waves you likely need: string literals, top-level `@import`
+(no-op), `pub fn main() void`, expression statements, and lowering
+`std.debug.print("…", .{{}})` to `fprintf(stderr, …)` (see diff.sh).
+
+Promote: `git mv ${path} zigrun/oracle/${item_id}.zig` and add '${item_id}'
+to the default suite in zigrun/oracle/check.sh AND zigrun/oracle/diff.sh.
 
 VERIFY (un-fakeable; runs real zig AND your zigrun): `bash zigrun/oracle/diff.sh
 ${item_id}` must print DIFFERENTIAL GREEN and `bash zigrun/oracle/diff.sh`

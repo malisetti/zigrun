@@ -253,6 +253,8 @@ pub enum Stmt {
     },
     Assign { target: AssignTarget, value: Expr },
     Return(Expr),
+    /// Expression statement, e.g. `std.debug.print(...);`
+    Expr(Expr),
     If {
         cond: Expr,
         ok_capture: Option<String>,
@@ -345,7 +347,10 @@ pub struct SwitchArm {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Expr {
     Int(i64),
+    StringLit(String),
     Bool(bool),
+    /// `std.debug.print(fmt, .{{}})` lowered to fprintf(stderr, …).
+    DebugPrint { format: String },
     Undefined,
     Var(String),
     Call { name: String, args: Vec<Expr> },

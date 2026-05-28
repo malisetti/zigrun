@@ -39,6 +39,16 @@ This is the **subset** (the language we are committing to support). It grows one
 wave at a time — widen it by adding programs to `oracle/`, never by relaxing the
 check.
 
+## North star: Hello, world!
+
+The evolution loop ([`evolve/GOAL.md`](evolve/GOAL.md), [`evolve/WAVES.md`](evolve/WAVES.md),
+[`evolve/frontier_run.sh`](evolve/frontier_run.sh)) drives the compiler until
+`bash oracle/diff.sh helloworld` is differentially green vs real Zig. Run:
+
+```bash
+zigrun run oracle/helloworld.zig   # prints Hello, world! on stderr (matches zig run)
+```
+
 ## The orchestration plan (oracle-gated vertical slices)
 
 Each slice makes more of the oracle green end-to-end (lex → parse → sema →

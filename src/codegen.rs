@@ -77,7 +77,7 @@ pub fn emit_c(program: &Program) -> Result<String, String> {
         return Err("no `main` function".to_string());
     }
     let mut out = String::new();
-    out.push_str("#include <stdint.h>\n#include <stdbool.h>\n#include <stddef.h>\n\n");
+    out.push_str("#include <stdint.h>\n#include <stdbool.h>\n#include <stddef.h>\n#include <stdio.h>\n\n");
 
     for e in &program.enums {
         emit_enum_def(&mut out, e)?;
@@ -153,7 +153,15 @@ pub fn emit_c(program: &Program) -> Result<String, String> {
         Ok::<(), String>(())
     })?;
 
-    out.push_str("int main(void) {\n    return (int)zig_main();\n}\n");
+    let void_main = program
+        .functions
+        .iter()
+        .any(|f| f.name == "main" && f.return_type == Type::Void);
+    if void_main {
+        out.push_str("int main(void) {\n    zig_main();\n    return 0;\n}\n");
+    } else {
+        out.push_str("int main(void) {\n    return (int)zig_main();\n}\n");
+    }
     Ok(out)
 }
 
@@ -288,6 +296,7 @@ fn collect_optionals_in_stmts(stmts: &[Stmt], add: &mut dyn FnMut(&Type)) {
             }
             Stmt::ForArray { body, .. } => collect_optionals_in_stmts(body, add),
             Stmt::Break { .. } | Stmt::Continue => {}
+            Stmt::Expr(e) => collect_optionals_in_expr(e, add),
             Stmt::Switch { scrutinee, arms } => {
                 collect_optionals_in_expr(scrutinee, add);
                 for arm in arms {
@@ -366,6 +375,8 @@ fn collect_optionals_in_expr(expr: &Expr, add: &mut dyn FnMut(&Type)) {
         Expr::IntFromEnum(inner) | Expr::Deref(inner) => collect_optionals_in_expr(inner, add),
         Expr::Int(_)
         | Expr::Bool(_)
+        | Expr::StringLit(_)
+        | Expr::DebugPrint { .. }
         | Expr::Undefined
         | Expr::Var(_)
         | Expr::EnumLiteral { .. }
@@ -430,6 +441,7 @@ fn collect_error_unions_in_stmts(stmts: &[Stmt], add: &mut dyn FnMut(&Type)) {
             }
             Stmt::ForArray { body, .. } => collect_error_unions_in_stmts(body, add),
             Stmt::Break { .. } | Stmt::Continue => {}
+            Stmt::Expr(e) => collect_optionals_in_expr(e, add),
             Stmt::Switch { scrutinee, arms } => {
                 collect_error_unions_in_expr(scrutinee, add);
                 for arm in arms {
@@ -509,6 +521,8 @@ fn collect_error_unions_in_expr(expr: &Expr, add: &mut dyn FnMut(&Type)) {
         Expr::IntFromEnum(inner) | Expr::Deref(inner) => collect_error_unions_in_expr(inner, add),
         Expr::Int(_)
         | Expr::Bool(_)
+        | Expr::StringLit(_)
+        | Expr::DebugPrint { .. }
         | Expr::Undefined
         | Expr::Var(_)
         | Expr::EnumLiteral { .. }
@@ -659,6 +673,21 @@ fn c_array_suffix(ty: &Type) -> String {
 
 fn c_int_type(ty: IntType) -> String {
     c_type(&Type::Int(ty))
+}
+
+fn c_string_literal(s: &str) -> String {
+    let mut out = String::from("\"");
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 fn prototype(f: &Function) -> String {
@@ -815,6 +844,7 @@ fn expr_type(expr: &Expr, env: &HashMap<String, Type>, func_returns: &HashMap<St
         Expr::Orelse { left, right } => expr_type(left, env, func_returns)
             .optional_inner()
             .unwrap_or_else(|| expr_type(right, env, func_returns)),
+        Expr::StringLit(_) | Expr::DebugPrint { .. } => Type::Void,
     }
 }
 
@@ -966,7 +996,25 @@ fn emit_stmt(
                 emit_expr(value, env, Some(&ty), func_returns, return_type, temp_id)?
             );
         }
+        Stmt::Expr(Expr::DebugPrint { format }) => {
+            let _ = writeln!(
+                out,
+                "fprintf(stderr, {});",
+                c_string_literal(format)
+            );
+        }
+        Stmt::Expr(e) => {
+            let _ = writeln!(
+                out,
+                "{};",
+                emit_expr(e, env, None, func_returns, return_type, temp_id)?
+            );
+        }
         Stmt::Return(e) => {
+            if matches!(return_type, Type::Void) {
+                let _ = writeln!(out, "return;");
+                return Ok(());
+            }
             let ret = if let Type::ErrorUnion { err_set, payload } = return_type {
                 if let Expr::ErrorLiteral { variant, .. } = e {
                     let st = c_error_union_name(err_set, payload);
@@ -1542,6 +1590,10 @@ fn emit_expr(
             } else {
                 "false".to_string()
             }
+        }
+        Expr::StringLit(s) => c_string_literal(s),
+        Expr::DebugPrint { format } => {
+            format!("(fprintf(stderr, {}, (void)0), 0)", c_string_literal(format))
         }
         Expr::Undefined => return Err("undefined has no runtime value".to_string()),
         Expr::Var(name) => name.clone(),

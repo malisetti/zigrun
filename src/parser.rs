@@ -71,6 +71,9 @@ impl Parser {
         let mut functions = Vec::new();
         while !self.check(&TokenKind::Eof) {
             if self.check(&TokenKind::Const) {
+                if self.try_skip_import_decl() {
+                    continue;
+                }
                 let decl = self.parse_const_decl()?;
                 match decl {
                     TopLevelDecl::Enum(e) => enum_defs.push(e),
@@ -722,6 +725,11 @@ impl Parser {
                 }
             }
         }
+        if self.check(&TokenKind::LParen) {
+            if let Some(stmt) = self.try_parse_debug_print_stmt(&target_expr)? {
+                return Ok(stmt);
+            }
+        }
         let target = match target_expr {
             Expr::Var(name) => AssignTarget::Name(name),
             Expr::Index { base, index } => AssignTarget::Index { base, index },
@@ -1210,8 +1218,85 @@ impl Parser {
         Ok(expr)
     }
 
+    fn try_skip_import_decl(&mut self) -> bool {
+        let save = self.pos;
+        if !self.check(&TokenKind::Const) {
+            return false;
+        }
+        self.advance();
+        if self.expect_ident().is_err() {
+            self.pos = save;
+            return false;
+        }
+        if !self.check(&TokenKind::Assign) {
+            self.pos = save;
+            return false;
+        }
+        self.advance();
+        if !self.check(&TokenKind::At) {
+            self.pos = save;
+            return false;
+        }
+        self.advance();
+        if self.expect_ident().ok().as_deref() != Some("import") {
+            self.pos = save;
+            return false;
+        }
+        if self.expect(TokenKind::LParen).is_err() {
+            self.pos = save;
+            return false;
+        }
+        while !self.check(&TokenKind::RParen) && !self.check(&TokenKind::Eof) {
+            self.advance();
+        }
+        if self.expect(TokenKind::RParen).is_err() || self.expect(TokenKind::Semicolon).is_err() {
+            self.pos = save;
+            return false;
+        }
+        true
+    }
+
+    fn field_path(expr: &Expr) -> Option<Vec<String>> {
+        match expr {
+            Expr::Var(name) => Some(vec![name.clone()]),
+            Expr::FieldAccess { base, field } => {
+                let mut p = Self::field_path(base)?;
+                p.push(field.clone());
+                Some(p)
+            }
+            _ => None,
+        }
+    }
+
+    fn try_parse_debug_print_stmt(&mut self, target: &Expr) -> Result<Option<Stmt>, String> {
+        let path = match Self::field_path(target) {
+            Some(p) if p == ["std", "debug", "print"] => p,
+            _ => return Ok(None),
+        };
+        let _ = path;
+        self.expect(TokenKind::LParen)?;
+        let format = match self.peek_kind() {
+            TokenKind::StringLit(s) => {
+                self.advance();
+                s
+            }
+            other => return Err(format!("std.debug.print expects string literal, got {other:?}")),
+        };
+        self.expect(TokenKind::Comma)?;
+        self.expect(TokenKind::Dot)?;
+        self.expect(TokenKind::LBrace)?;
+        self.expect(TokenKind::RBrace)?;
+        self.expect(TokenKind::RParen)?;
+        self.expect(TokenKind::Semicolon)?;
+        Ok(Some(Stmt::Expr(Expr::DebugPrint { format })))
+    }
+
     fn parse_primary(&mut self) -> Result<Expr, String> {
         match self.peek_kind() {
+            TokenKind::StringLit(s) => {
+                self.advance();
+                Ok(Expr::StringLit(s))
+            }
             TokenKind::LBracket => self.parse_typed_array_literal(),
             TokenKind::Dot => {
                 self.advance();
@@ -2105,6 +2190,7 @@ fn infer_expr_type(
             .pointee()
             .unwrap_or(Type::Int(IntType::U8)),
         Expr::Orelse { right, .. } => infer_expr_type(right, enums, structs, unions, locals, functions),
+        Expr::StringLit(_) | Expr::DebugPrint { .. } => Type::Void,
     }
 }
 

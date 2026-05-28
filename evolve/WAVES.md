@@ -44,6 +44,10 @@ durable state — stop and resume any time.
 - [x] errorunion_s3 | oracle/errorunion_s3.zig | ladder step for 'errorunion' (real zig=80) (landed autonomously vs real zig)
 - [x] errorunion_s2 | oracle/errorunion_s2.zig | ladder step for 'errorunion' (real zig=60) (landed autonomously vs real zig)
 
+## North star (hello world — frontier-run prioritizes these first)
+- [x] helloworld | oracle/helloworld.zig | NORTH STAR: `@import("std")` + `std.debug.print("Hello, world!\n", .{{}})` — DIFFERENTIAL GREEN vs real zig (landed on main)
+- [ ] print | oracle/pending/print.zig | ladder: single `std.debug.print` line (same I/O path as helloworld)
+
 ## Frontier (pending — each is real Zig that zigrun must learn to match)
 - [ ] bitwise | oracle/pending/bitwise.zig | self-discovered atomic gap (real zig=35)
 - [ ] for | oracle/pending/for.zig | self-discovered atomic gap (real zig=39)
@@ -96,8 +100,6 @@ durable state — stop and resume any time.
 - [ ] packed_struct | oracle/pending/packed_struct.zig | self-DISCOVERED gap (planner-generated, real zig=111, zigrun diverged)
 - [ ] multidim_arrays | oracle/pending/multidim_arrays.zig | self-DISCOVERED gap (planner-generated, real zig=45, zigrun diverged)
 - [ ] error_union | oracle/pending/error_union.zig | self-DISCOVERED gap (planner-generated, real zig=105, zigrun diverged)
-- [ ] print | (spec deferred) | NEEDS ORACLE WORK FIRST: `std.debug.print` writes to STDERR but diff.sh compares stdout — gate must observe stderr (or use std.io stdout writer) before this wave is false-green-safe.
-
 ## How a wave lands
 1. `evolve.sh` picks the next `[ ]`, ensures zig, runs the differential gate → RED.
 2. Dispatch the objective to a worker (inner LLM writes the compiler code) OR implement directly.
