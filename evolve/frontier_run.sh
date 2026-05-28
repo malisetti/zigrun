@@ -38,8 +38,33 @@ if [ "${1:-}" = "--dry-run" ]; then
 fi
 
 prune_stale_slots() {
-  echo "frontier_run: reclaiming stale worker slots (older than 20m)…"
-  "$NF" orch cancel-stale --older-than 20m --reason "zigrun frontier slot reclaim" 2>/dev/null || true
+  echo "frontier_run: reclaiming stale worker slots (older than 5m)…"
+  "$NF" orch cancel-stale --older-than 5m --reason "zigrun frontier slot reclaim" 2>/dev/null || true
+  # Force-cancel duplicate accepted tasks on cursor impl workers (max-tasks=1).
+  python3 - "$NF" "$IMPL_WORKERS" <<'PY' || true
+import json, subprocess, sys
+nf, workers_csv = sys.argv[1], sys.argv[2]
+workers = set(workers_csv.split(","))
+raw = subprocess.run([nf, "orch", "list", "--active", "--output", "json"],
+                     capture_output=True, text=True, timeout=120)
+if raw.returncode != 0 or not raw.stdout.strip():
+    sys.exit(0)
+tasks = json.loads(raw.stdout)
+by_worker = {}
+for t in tasks:
+    w = t.get("worker_id", "")
+    if w in workers or w.replace("agent-b147cc87.", "") in {x.split(".")[-1] for x in workers}:
+        key = w if w in workers else next((x for x in workers if x.endswith(w)), w)
+        by_worker.setdefault(key, []).append(t)
+for w, ts in by_worker.items():
+    ts.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+    for dup in ts[1:]:
+        tid = dup["task_id"]
+        print(f"prune duplicate {tid} on {w}", flush=True)
+        subprocess.run([nf, "orch", "cancel", "--worker", w, "--task", tid,
+                        "--force", "--reason", "zigrun frontier slot dedup"],
+                       capture_output=True, timeout=60)
+PY
 }
 
 run_batch() {
