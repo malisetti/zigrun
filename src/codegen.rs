@@ -1712,7 +1712,11 @@ fn emit_expr(
                 "({{ {st} {tmp} = {call}; if ({tmp}.err != {ok}) return {tmp}; {tmp}.value; }})"
             )
         }
-        Expr::Catch { expr, fallback, .. } => {
+        Expr::Catch {
+            expr,
+            capture,
+            fallback,
+        } => {
             let inner_ty = expr_type(expr, env, func_returns);
             let Type::ErrorUnion { err_set, payload } = inner_ty else {
                 return Err("catch requires error union expression".to_string());
@@ -1728,19 +1732,38 @@ fn emit_expr(
                 fn_return_type,
                 temp_id,
             )?;
-            let fb = emit_expr(
-                fallback,
-                env,
-                Some(&payload),
-                func_returns,
-                fn_return_type,
-                temp_id,
-            )?;
+            let mut fb_env = env.clone();
+            let fb = if let Some(cap) = capture {
+                let tag_ty = c_error_tag_enum(&err_set);
+                fb_env.insert(cap.clone(), Type::Enum(format!("{err_set}_err")));
+                let body = emit_expr(
+                    fallback,
+                    &fb_env,
+                    Some(&payload),
+                    func_returns,
+                    fn_return_type,
+                    temp_id,
+                )?;
+                format!("({{ {tag_ty} {cap} = {tmp}.err; {body}; }})")
+            } else {
+                emit_expr(
+                    fallback,
+                    env,
+                    Some(&payload),
+                    func_returns,
+                    fn_return_type,
+                    temp_id,
+                )?
+            };
             format!(
                 "({{ {st} {tmp} = {call}; {tmp}.err == {ok} ? {tmp}.value : ({fb}); }})"
             )
         }
-        Expr::CatchReturn { expr, ret_val, .. } => {
+        Expr::CatchReturn {
+            expr,
+            capture,
+            ret_val,
+        } => {
             let inner_ty = expr_type(expr, env, func_returns);
             let Type::ErrorUnion { err_set, payload } = inner_ty else {
                 return Err("catch requires error union expression".to_string());
@@ -1756,14 +1779,29 @@ fn emit_expr(
                 fn_return_type,
                 temp_id,
             )?;
-            let ret = emit_expr(
-                ret_val,
-                env,
-                Some(fn_return_type),
-                func_returns,
-                fn_return_type,
-                temp_id,
-            )?;
+            let mut ret_env = env.clone();
+            let ret = if let Some(cap) = capture {
+                let tag_ty = c_error_tag_enum(&err_set);
+                ret_env.insert(cap.clone(), Type::Enum(format!("{err_set}_err")));
+                let body = emit_expr(
+                    ret_val,
+                    &ret_env,
+                    Some(fn_return_type),
+                    func_returns,
+                    fn_return_type,
+                    temp_id,
+                )?;
+                format!("({{ {tag_ty} {cap} = {tmp}.err; {body}; }})")
+            } else {
+                emit_expr(
+                    ret_val,
+                    env,
+                    Some(fn_return_type),
+                    func_returns,
+                    fn_return_type,
+                    temp_id,
+                )?
+            };
             format!(
                 "({{ {st} {tmp} = {call}; if ({tmp}.err != {ok}) return {ret}; {tmp}.value; }})"
             )

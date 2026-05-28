@@ -1162,6 +1162,16 @@ impl Parser {
         if self.check(&TokenKind::Catch) {
             self.advance();
             let capture = self.parse_switch_capture()?;
+            let err_tag = self
+                .infer_expr_type_local(&expr)
+                .error_union_err_set()
+                .map(|err_set| Type::Enum(format!("{err_set}_err")));
+            let saved_capture = capture.as_ref().zip(err_tag).map(|(cap, tag_ty)| {
+                (
+                    cap.clone(),
+                    self.locals.insert(cap.clone(), tag_ty),
+                )
+            });
             if self.check(&TokenKind::Return) {
                 self.advance();
                 let ret_val = self.parse_unary()?;
@@ -1177,6 +1187,16 @@ impl Parser {
                     capture,
                     fallback: Box::new(fallback),
                 };
+            }
+            if let Some((cap, prev)) = saved_capture {
+                match prev {
+                    Some(t) => {
+                        self.locals.insert(cap, t);
+                    }
+                    None => {
+                        self.locals.remove(&cap);
+                    }
+                }
             }
         }
         if self.check(&TokenKind::Orelse) {
@@ -1553,6 +1573,61 @@ impl Parser {
                     if !self.enum_has_variant(&enum_name, &variant) {
                         return Err(format!(
                             "unknown variant {variant:?} for enum {enum_name:?}"
+                        ));
+                    }
+                    self.expect(TokenKind::FatArrow)?;
+                    arms.push(SwitchArm {
+                        tag: SwitchTag::EnumVariant {
+                            enum_name: enum_name.clone(),
+                            variant,
+                        },
+                        expr: self.parse_expr()?,
+                    });
+                }
+            } else if let TokenKind::Ident(potential_enum) = self.peek_kind() {
+                if !self.check_next(&TokenKind::Dot) {
+                    if scrutinee_enum.is_some() || scrutinee_union.is_some() {
+                        return Err("enum/union switch requires `.variant =>` arms".to_string());
+                    }
+                    let tags = self.parse_int_switch_tags()?;
+                    self.expect(TokenKind::FatArrow)?;
+                    let capture = self.parse_switch_capture()?;
+                    let expr = self.parse_expr()?;
+                    for tag in tags {
+                        let tag = match tag {
+                            SwitchTag::IntRange { lo, hi, .. } => SwitchTag::IntRange {
+                                lo,
+                                hi,
+                                capture: capture.clone(),
+                            },
+                            other => other,
+                        };
+                        arms.push(SwitchArm { tag, expr: expr.clone() });
+                    }
+                } else {
+                    let enum_name = scrutinee_enum.clone().ok_or_else(|| {
+                        "qualified switch arm requires enum or error-tag scrutinee".to_string()
+                    })?;
+                    self.advance();
+                    self.advance();
+                    let variant = self.expect_ident()?;
+                    if enum_name == potential_enum {
+                        if !self.enum_has_variant(&enum_name, &variant) {
+                            return Err(format!(
+                                "unknown variant {variant:?} for enum {enum_name:?}"
+                            ));
+                        }
+                    } else if enum_name.ends_with("_err")
+                        && format!("{potential_enum}_err") == enum_name
+                    {
+                        if !self.enum_has_variant(&enum_name, &variant) {
+                            return Err(format!(
+                                "unknown variant {variant:?} for error set {potential_enum:?}"
+                            ));
+                        }
+                    } else {
+                        return Err(format!(
+                            "switch arm enum {potential_enum:?} does not match scrutinee enum {enum_name:?}"
                         ));
                     }
                     self.expect(TokenKind::FatArrow)?;
