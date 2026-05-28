@@ -185,6 +185,8 @@ pub struct UnionVariant {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnionDef {
     pub name: String,
+    /// `union(enum) { ... }` uses an inline tag enum; `union(SomeEnum) { ... }` tags with `SomeEnum`.
+    pub tag_enum: Option<String>,
     pub variants: Vec<UnionVariant>,
 }
 

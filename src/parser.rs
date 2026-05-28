@@ -111,7 +111,16 @@ impl Parser {
     fn parse_union_body(&mut self, name: String) -> Result<UnionDef, String> {
         self.expect(TokenKind::Union)?;
         self.expect(TokenKind::LParen)?;
-        self.expect(TokenKind::Enum)?;
+        let tag_enum = if self.check(&TokenKind::Enum) {
+            self.advance();
+            None
+        } else {
+            let tag_name = self.expect_ident()?;
+            if !self.enums.contains_key(&tag_name) {
+                return Err(format!("union tag type {tag_name:?} is not a known enum"));
+            }
+            Some(tag_name)
+        };
         self.expect(TokenKind::RParen)?;
         self.expect(TokenKind::LBrace)?;
         let mut variants = Vec::new();
@@ -135,7 +144,11 @@ impl Parser {
             return Err(format!("union {name} has no variants"));
         }
         self.unions.insert(name.clone(), variants.clone());
-        Ok(UnionDef { name, variants })
+        Ok(UnionDef {
+            name,
+            tag_enum,
+            variants,
+        })
     }
 
     fn parse_error_set_body(&mut self, name: String) -> Result<ErrorSetDef, String> {

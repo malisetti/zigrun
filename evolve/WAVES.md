@@ -33,6 +33,7 @@ durable state — stop and resume any time.
 - [x] arithmetic | oracle/arithmetic.zig | self-discovered atomic gap (real zig=185) (landed autonomously vs real zig)
 - [x] enum | oracle/enum.zig | self-discovered atomic gap (real zig=25) (landed autonomously vs real zig)
 - [x] enums | oracle/enums.zig | self-discovered atomic gap (real zig=55) (landed autonomously vs real zig)
+- [x] taggedunion_s5 | oracle/taggedunion_s5.zig | ladder step for 'taggedunion' (real zig=17) (landed autonomously vs real zig)
 
 ## Frontier (pending — each is real Zig that zigrun must learn to match)
 - [ ] bitwise | oracle/pending/bitwise.zig | self-discovered atomic gap (real zig=35)
@@ -42,7 +43,6 @@ durable state — stop and resume any time.
 - [ ] struct | oracle/pending/struct.zig | self-discovered atomic gap (real zig=42)
 - [ ] errors | oracle/pending/errors.zig | self-discovered atomic gap (real zig=120)
 - [ ] loops | oracle/pending/loops.zig | self-discovered atomic gap (real zig=26)
-- [ ] taggedunion_s5 | oracle/pending/taggedunion_s5.zig | ladder step for 'taggedunion' (real zig=17)
 - [ ] taggedunion_s4 | oracle/pending/taggedunion_s4.zig | ladder step for 'taggedunion' (real zig=56)
 - [ ] taggedunion_s3 | oracle/pending/taggedunion_s3.zig | ladder step for 'taggedunion' (real zig=50)
 - [ ] taggedunion_s2 | oracle/pending/taggedunion_s2.zig | ladder step for 'taggedunion' (real zig=10)

@@ -35,7 +35,7 @@ if [ ${#progs[@]} -eq 0 ]; then
   if [ $errors -eq 1 ]; then
     progs=(); for f in oracle/err/*.zig; do progs+=("$(basename "$f" .zig)"); done
   else
-    progs=(add vars ifelse while fn fib bitops forloop switch elseif loopctl inttypes signedints u64wide unaryneg boollogic arraysum arrayidx atmod structfield optional recursion arithmetic enum for errors bitwise enums)
+    progs=(add vars ifelse while fn fib bitops forloop switch elseif loopctl inttypes signedints u64wide unaryneg boollogic arraysum arrayidx atmod structfield optional recursion arithmetic enum for errors bitwise enums taggedunion_s5)
   fi
 fi
 

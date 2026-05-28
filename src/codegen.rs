@@ -16,17 +16,29 @@ use std::fmt::Write;
 
 thread_local! {
     static ENUM_DEFS: RefCell<HashMap<String, EnumDef>> = RefCell::new(HashMap::new());
+    static UNION_DEFS: RefCell<HashMap<String, UnionDef>> = RefCell::new(HashMap::new());
 }
 
-fn with_enum_defs<R>(defs: &HashMap<String, EnumDef>, f: impl FnOnce() -> R) -> R {
+fn with_type_defs<R>(
+    enums: &HashMap<String, EnumDef>,
+    unions: &HashMap<String, UnionDef>,
+    f: impl FnOnce() -> R,
+) -> R {
     ENUM_DEFS.with(|cell| {
-        *cell.borrow_mut() = defs.clone();
-        f()
+        *cell.borrow_mut() = enums.clone();
+        UNION_DEFS.with(|u_cell| {
+            *u_cell.borrow_mut() = unions.clone();
+            f()
+        })
     })
 }
 
 fn lookup_enum(name: &str) -> Option<EnumDef> {
     ENUM_DEFS.with(|cell| cell.borrow().get(name).cloned())
+}
+
+fn lookup_union(name: &str) -> Option<UnionDef> {
+    UNION_DEFS.with(|cell| cell.borrow().get(name).cloned())
 }
 
 pub fn emit_c(program: &Program) -> Result<String, String> {
@@ -84,8 +96,13 @@ pub fn emit_c(program: &Program) -> Result<String, String> {
         .iter()
         .map(|e| (e.name.clone(), e.clone()))
         .collect();
+    let union_defs: HashMap<String, UnionDef> = program
+        .unions
+        .iter()
+        .map(|u| (u.name.clone(), u.clone()))
+        .collect();
 
-    with_enum_defs(&enum_defs, || {
+    with_type_defs(&enum_defs, &union_defs, || {
         for f in &program.functions {
             emit_function(&mut out, f, &func_returns)?;
             out.push('\n');
@@ -111,8 +128,18 @@ fn emit_struct_def(out: &mut String, s: &StructDef) -> Result<(), String> {
 }
 
 
-fn c_union_tag(union_name: &str, variant: &str) -> String {
-    format!("{union_name}_tag_{variant}")
+fn c_union_tag(union: &UnionDef, variant: &str) -> String {
+    match &union.tag_enum {
+        Some(enum_name) => c_enum_variant(enum_name, variant),
+        None => format!("{}_tag_{}", union.name, variant),
+    }
+}
+
+fn union_tag_c_type(union: &UnionDef) -> String {
+    union
+        .tag_enum
+        .clone()
+        .unwrap_or_else(|| format!("{}_tag", union.name))
 }
 
 fn union_payload_c_type(variants: &[UnionVariant]) -> String {
@@ -131,16 +158,19 @@ fn union_payload_c_type(variants: &[UnionVariant]) -> String {
 }
 
 fn emit_union_def(out: &mut String, u: &UnionDef) -> Result<(), String> {
-    let _ = writeln!(out, "typedef enum {{");
-    for v in &u.variants {
-        let _ = writeln!(out, "    {},", c_union_tag(&u.name, &v.name));
+    if u.tag_enum.is_none() {
+        let _ = writeln!(out, "typedef enum {{");
+        for v in &u.variants {
+            let _ = writeln!(out, "    {},", c_union_tag(u, &v.name));
+        }
+        let _ = writeln!(out, "}} {}_tag;", u.name);
     }
-    let _ = writeln!(out, "}} {}_tag;", u.name);
+    let tag_ty = union_tag_c_type(u);
     let payload_ty = union_payload_c_type(&u.variants);
     let _ = writeln!(
         out,
-        "typedef struct {{ {}_tag tag; {} payload; }} {};",
-        u.name, payload_ty, u.name
+        "typedef struct {{ {tag_ty} tag; {payload_ty} payload; }} {};",
+        u.name
     );
     Ok(())
 }
@@ -1415,7 +1445,8 @@ fn emit_expr(
             let un = union_name
                 .as_ref()
                 .ok_or_else(|| "union literal missing type".to_string())?;
-            let tag = c_union_tag(un, variant);
+            let udef = lookup_union(un).ok_or_else(|| format!("unknown union {un}"))?;
+            let tag = c_union_tag(&udef, variant);
             let mut init = format!("({un}){{ .tag = {tag}");
             if let Some(val) = value {
                 let _ = write!(
@@ -1614,7 +1645,8 @@ fn emit_union_switch(
         let SwitchTag::UnionVariant { variant, capture, .. } = &arm.tag else {
             return Err("union switch requires union variant arms".to_string());
         };
-        let tag = c_union_tag(union_name, variant);
+        let udef = lookup_union(union_name).ok_or_else(|| format!("unknown union {union_name}"))?;
+        let tag = c_union_tag(&udef, variant);
         let arm_expr = emit_expr(
             &arm.expr,
             env,
