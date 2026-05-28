@@ -15,6 +15,7 @@ pub enum Type {
         payload: Box<Type>,
     },
     Optional(Box<Type>),
+    Pointer(Box<Type>),
     Void,
 }
 
@@ -36,6 +37,7 @@ impl Type {
             Type::Union(_) => None,
             Type::ErrorUnion { payload, .. } => payload.int_type(),
             Type::Optional(inner) => inner.int_type(),
+            Type::Pointer(inner) => inner.int_type(),
             Type::Void => None,
         }
     }
@@ -57,8 +59,20 @@ impl Type {
     pub fn struct_name(&self) -> Option<&str> {
         match self {
             Type::Struct(name) => Some(name),
+            Type::Pointer(inner) => inner.struct_name(),
             _ => None,
         }
+    }
+
+    pub fn pointee(&self) -> Option<Type> {
+        match self {
+            Type::Pointer(inner) => Some((**inner).clone()),
+            _ => None,
+        }
+    }
+
+    pub fn is_pointer(&self) -> bool {
+        matches!(self, Type::Pointer(_))
     }
 
     pub fn union_name(&self) -> Option<&str> {
@@ -280,6 +294,10 @@ pub enum AssignTarget {
     Index {
         base: Box<Expr>,
         index: Box<Expr>,
+    },
+    Field {
+        base: Box<Expr>,
+        field: String,
     },
 }
 

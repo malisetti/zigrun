@@ -18,6 +18,7 @@ thread_local! {
     static ENUM_DEFS: RefCell<HashMap<String, EnumDef>> = RefCell::new(HashMap::new());
     static UNION_DEFS: RefCell<HashMap<String, UnionDef>> = RefCell::new(HashMap::new());
     static STRUCT_DEFS: RefCell<HashMap<String, StructDef>> = RefCell::new(HashMap::new());
+    static FUNC_PARAMS: RefCell<HashMap<String, Vec<Type>>> = RefCell::new(HashMap::new());
 }
 
 fn with_type_defs<R>(
@@ -48,6 +49,27 @@ fn lookup_union(name: &str) -> Option<UnionDef> {
 
 fn lookup_struct(name: &str) -> Option<StructDef> {
     STRUCT_DEFS.with(|cell| cell.borrow().get(name).cloned())
+}
+
+fn lookup_func_params(name: &str) -> Option<Vec<Type>> {
+    FUNC_PARAMS.with(|cell| cell.borrow().get(name).cloned())
+}
+
+fn emit_field_access(
+    base: &Expr,
+    field: &str,
+    env: &HashMap<String, Type>,
+    func_returns: &HashMap<String, Type>,
+    fn_return_type: &Type,
+    temp_id: &mut usize,
+) -> Result<String, String> {
+    let base_ty = expr_type(base, env, func_returns);
+    let base_s = emit_expr(base, env, None, func_returns, fn_return_type, temp_id)?;
+    if base_ty.is_pointer() {
+        Ok(format!("({base_s})->{field}"))
+    } else {
+        Ok(format!("({base_s}).{field}"))
+    }
 }
 
 pub fn emit_c(program: &Program) -> Result<String, String> {
@@ -115,6 +137,13 @@ pub fn emit_c(program: &Program) -> Result<String, String> {
         .iter()
         .map(|s| (s.name.clone(), s.clone()))
         .collect();
+
+    let func_params: HashMap<String, Vec<Type>> = program
+        .functions
+        .iter()
+        .map(|f| (f.name.clone(), f.params.iter().map(|(_, t)| t.clone()).collect()))
+        .collect();
+    FUNC_PARAMS.with(|cell| *cell.borrow_mut() = func_params);
 
     with_type_defs(&enum_defs, &union_defs, &struct_defs, || {
         for f in &program.functions {
@@ -594,6 +623,7 @@ fn c_type(ty: &Type) -> String {
         Type::Union(name) => name.clone(),
         Type::ErrorUnion { err_set, payload } => c_error_union_name(err_set, payload),
         Type::Optional(inner) => c_optional_name(inner),
+        Type::Pointer(inner) => format!("{} *", c_type(inner)),
         Type::Void => "void".to_string(),
     }
 }
@@ -1345,6 +1375,7 @@ fn assign_target_type(target: &AssignTarget, env: &HashMap<String, Type>) -> Typ
             .cloned()
             .unwrap_or(Type::Int(IntType::U8)),
         AssignTarget::Index { base, .. } => indexed_lvalue_type(base, env, &HashMap::new()),
+        AssignTarget::Field { base, field } => field_expr_type(base, field, env),
     }
 }
 
@@ -1378,6 +1409,9 @@ fn emit_assign_target(
                     temp_id,
                 )?
             )
+        }
+        AssignTarget::Field { base, field } => {
+            emit_field_access(base, field, env, func_returns, fn_return_type, temp_id)?
         }
     })
 }
@@ -1435,13 +1469,27 @@ fn emit_expr(
             format!("({})({})", c_int_type(backing), inner_s)
         }
         Expr::Call { name, args } => {
-            let ret_ty = func_returns
-                .get(name)
-                .cloned()
-                .unwrap_or(Type::Int(IntType::U8));
+            let params = lookup_func_params(name);
             let mut parts = Vec::with_capacity(args.len());
-            for a in args {
-                parts.push(emit_expr(a, env, None, func_returns, fn_return_type, temp_id)?);
+            for (i, a) in args.iter().enumerate() {
+                let arg_s = emit_expr(a, env, None, func_returns, fn_return_type, temp_id)?;
+                if i == 0 {
+                    if let Some(ref ptypes) = params {
+                        let arg_ty = expr_type(a, env, func_returns);
+                        match ptypes.first() {
+                            Some(Type::Pointer(_)) if !arg_ty.is_pointer() => {
+                                parts.push(format!("&({arg_s})"));
+                                continue;
+                            }
+                            Some(Type::Struct(_)) if arg_ty.is_pointer() => {
+                                parts.push(format!("(*({arg_s}))"));
+                                continue;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                parts.push(arg_s);
             }
             format!("{}({})", c_fn(name), parts.join(", "))
         }
@@ -1771,7 +1819,7 @@ fn emit_expr(
                     }
                 }
             }
-            format!("({base_s}).{field}")
+            emit_field_access(base, field, env, func_returns, fn_return_type, temp_id)?
         }
         Expr::Orelse { left, right } => {
             let inner = expr_type(left, env, func_returns)

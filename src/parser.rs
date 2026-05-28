@@ -345,6 +345,10 @@ impl Parser {
     }
 
     fn parse_type(&mut self) -> Result<Type, String> {
+        if self.check(&TokenKind::Star) {
+            self.advance();
+            return Ok(Type::Pointer(Box::new(self.parse_type()?)));
+        }
         if self.check(&TokenKind::Question) {
             self.advance();
             return Ok(Type::Optional(Box::new(self.parse_type()?)));
@@ -576,18 +580,68 @@ impl Parser {
     fn parse_assign_stmt(&mut self, name: String) -> Result<Stmt, String> {
         self.advance();
         let mut target_expr = Expr::Var(name);
-        while self.check(&TokenKind::LBracket) {
-            self.advance();
-            let index = self.parse_expr()?;
-            self.expect(TokenKind::RBracket)?;
-            target_expr = Expr::Index {
-                base: Box::new(target_expr),
-                index: Box::new(index),
-            };
+        while self.check(&TokenKind::LBracket) || self.check(&TokenKind::Dot) {
+            if self.check(&TokenKind::Dot) {
+                self.advance();
+                let field = self.expect_ident()?;
+                target_expr = Expr::FieldAccess {
+                    base: Box::new(target_expr),
+                    field,
+                };
+            } else {
+                self.advance();
+                let index = self.parse_expr()?;
+                self.expect(TokenKind::RBracket)?;
+                target_expr = Expr::Index {
+                    base: Box::new(target_expr),
+                    index: Box::new(index),
+                };
+            }
+        }
+        if let Expr::FieldAccess { base, field } = &target_expr {
+            if self.check(&TokenKind::LParen) {
+                let struct_name = match base.as_ref() {
+                    Expr::Var(v) => self
+                        .locals
+                        .get(v)
+                        .and_then(|t| t.struct_name().map(str::to_string)),
+                    _ => None,
+                };
+                if let Some(sn) = struct_name {
+                    if self
+                        .struct_methods
+                        .get(&sn)
+                        .map_or(false, |ms| ms.contains(field))
+                    {
+                        self.advance();
+                        let mut args = vec![*base.clone()];
+                        if !self.check(&TokenKind::RParen) {
+                            loop {
+                                args.push(self.parse_expr()?);
+                                if self.check(&TokenKind::Comma) {
+                                    self.advance();
+                                } else {
+                                    break;
+                                }
+                            }
+                        }
+                        self.expect(TokenKind::RParen)?;
+                        self.expect(TokenKind::Semicolon)?;
+                        return Ok(Stmt::Assign {
+                            target: AssignTarget::Name("_".to_string()),
+                            value: Expr::Call {
+                                name: format!("{}_{}", sn, field),
+                                args,
+                            },
+                        });
+                    }
+                }
+            }
         }
         let target = match target_expr {
             Expr::Var(name) => AssignTarget::Name(name),
             Expr::Index { base, index } => AssignTarget::Index { base, index },
+            Expr::FieldAccess { base, field } => AssignTarget::Field { base, field },
             other => {
                 return Err(format!(
                     "expected variable or indexed lvalue, found {other:?}"
@@ -649,6 +703,10 @@ impl Parser {
                 AssignTarget::Index { base, index } => Expr::Index {
                     base: base.clone(),
                     index: index.clone(),
+                },
+                AssignTarget::Field { base, field } => Expr::FieldAccess {
+                    base: base.clone(),
+                    field: field.clone(),
                 },
             };
             Expr::BinOp {
@@ -1818,6 +1876,7 @@ fn field_type(
         _ => None,
     };
     base_ty
+        .and_then(|t| t.pointee().or(Some(t)))
         .and_then(|t| t.struct_name().map(str::to_string))
         .and_then(|sn| structs.get(&sn))
         .and_then(|fields| {
