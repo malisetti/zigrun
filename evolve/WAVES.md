@@ -35,6 +35,7 @@ durable state — stop and resume any time.
 - [x] enums | oracle/enums.zig | self-discovered atomic gap (real zig=55) (landed autonomously vs real zig)
 - [x] taggedunion_s5 | oracle/taggedunion_s5.zig | ladder step for 'taggedunion' (real zig=17) (landed autonomously vs real zig)
 - [x] taggedunion_s3 | oracle/taggedunion_s3.zig | ladder step for 'taggedunion' (real zig=50) (landed autonomously vs real zig)
+- [x] structmethod_s2 | oracle/structmethod_s2.zig | ladder step for 'structmethod' (real zig=42) (landed autonomously vs real zig)
 
 ## Frontier (pending — each is real Zig that zigrun must learn to match)
 - [ ] bitwise | oracle/pending/bitwise.zig | self-discovered atomic gap (real zig=35)
@@ -50,7 +51,6 @@ durable state — stop and resume any time.
 - [ ] structmethod_s5 | oracle/pending/structmethod_s5.zig | ladder step for 'structmethod' (real zig=14)
 - [ ] structmethod_s4 | oracle/pending/structmethod_s4.zig | ladder step for 'structmethod' (real zig=8)
 - [ ] structmethod_s3 | oracle/pending/structmethod_s3.zig | ladder step for 'structmethod' (real zig=50)
-- [ ] structmethod_s2 | oracle/pending/structmethod_s2.zig | ladder step for 'structmethod' (real zig=42)
 - [ ] structmethod_s1 | oracle/pending/structmethod_s1.zig | ladder step for 'structmethod' (real zig=7)
 - [ ] packedstruct_s5 | oracle/pending/packedstruct_s5.zig | ladder step for 'packedstruct' (real zig=53)
 - [ ] packedstruct_s4 | oracle/pending/packedstruct_s4.zig | ladder step for 'packedstruct' (real zig=9)

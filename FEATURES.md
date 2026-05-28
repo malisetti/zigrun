@@ -41,7 +41,7 @@ zigrun compiles a **subset** of Zig to C. This scorecard tracks coverage
 
 ## Honest coverage
 
-Roughly **~34 of ~80** tracked feature items are implemented — on the order of
+Roughly **~35 of ~80** tracked feature items are implemented — on the order of
 **10–15% of Zig's language-feature surface**, and far less of the real compiler's
 machinery (no comptime, no std, no backend beyond C). **This is NOT 50%.**
 Reaching meaningful coverage is the ongoing evolving work below — the scorecard
