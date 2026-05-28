@@ -21,13 +21,18 @@ Usage:
   python3 evolve/land_wave.py <wave-id> --worker <agent-id>
   python3 evolve/land_wave.py <wave-id> --dry-run          # plan only, no dispatch
 """
-import argparse, base64, json, os, re, shutil, subprocess, sys, tempfile, time
+import argparse, base64, fcntl, json, os, re, shutil, subprocess, sys, tempfile, time
 from pathlib import Path
 
 ZIGRUN = Path(__file__).resolve().parent.parent          # .../zigrun
 REPO = ZIGRUN.parent                                      # repo root
 WAVES = ZIGRUN / "evolve" / "WAVES.md"
 LEDGER = Path.home() / ".nfltr" / "ledger.json"
+# Cross-process exclusive lock around the operator-tree mutation block
+# (gate + land_on_main + bookkeep + push). dispatch+wait+recover run fully in
+# parallel across workers; only this final test-and-merge phase serializes —
+# the share-state critical section.
+LAND_LOCK = REPO / ".zigrun-land.lock"
 SEP = "\x1f"
 STALL_SECS = 240          # accepted-but-not-running this long => re-dispatch
 POLL = 18
@@ -366,25 +371,32 @@ def main():
         ledger_record(used, "implementer", False, "no_patch", (time.time()-t0)*1000)
         print("  RESULT: worker returned no recoverable patch."); sys.exit(1)
 
-    green, scratch, detail = gate(a.wave_id, spec_path, patch)
-    print("  --- differential gate (real zig) ---")
-    print("  " + detail.replace("\n", "\n  "))
-    if not green:
-        ledger_record(used, "implementer", False, "gate_red", (time.time()-t0)*1000)
-        shutil.rmtree(scratch, ignore_errors=True)
-        print(f"  RESULT: RED — {a.wave_id} diverges from real zig. (re-dispatch with this feedback)")
-        sys.exit(1)
+    # Serialize the test-and-merge phase across parallel land_wave.py invocations.
+    # gate reads the operator tree as ground truth + applies the patch into a
+    # scratch dir; land_on_main mutates main + WAVES.md + FEATURES.md; push
+    # touches the remote. Two land_waves racing here corrupt each other (lost
+    # bookkeep flips, gate testing against a tree another land just rewrote).
+    with open(LAND_LOCK, "w") as _lockf:
+        fcntl.flock(_lockf, fcntl.LOCK_EX)
+        green, scratch, detail = gate(a.wave_id, spec_path, patch)
+        print("  --- differential gate (real zig) ---")
+        print("  " + detail.replace("\n", "\n  "))
+        if not green:
+            ledger_record(used, "implementer", False, "gate_red", (time.time()-t0)*1000)
+            shutil.rmtree(scratch, ignore_errors=True)
+            print(f"  RESULT: RED — {a.wave_id} diverges from real zig. (re-dispatch with this feedback)")
+            sys.exit(1)
 
-    ok, finaldetail = land_on_main(a.wave_id, spec_path, scratch, used, env)
-    shutil.rmtree(scratch, ignore_errors=True)
-    if not ok:
-        ledger_record(used, "implementer", False, "merge_regressed", (time.time()-t0)*1000)
-        print(f"  RESULT: scratch green but on-main verify regressed:\n{finaldetail}"); sys.exit(1)
-    ledger_record(used, "implementer", True, "", (time.time()-t0)*1000)
-    pushed = push()
-    print(f"  RESULT: {a.wave_id} LANDED autonomously — full suite green vs real zig; "
-          f"WAVES.md flipped to [x], FEATURES bumped, ledger recorded, pushed={pushed}. "
-          f"Frontier advanced — no operator steps.")
+        ok, finaldetail = land_on_main(a.wave_id, spec_path, scratch, used, env)
+        shutil.rmtree(scratch, ignore_errors=True)
+        if not ok:
+            ledger_record(used, "implementer", False, "merge_regressed", (time.time()-t0)*1000)
+            print(f"  RESULT: scratch green but on-main verify regressed:\n{finaldetail}"); sys.exit(1)
+        ledger_record(used, "implementer", True, "", (time.time()-t0)*1000)
+        pushed = push()
+        print(f"  RESULT: {a.wave_id} LANDED autonomously — full suite green vs real zig; "
+              f"WAVES.md flipped to [x], FEATURES bumped, ledger recorded, pushed={pushed}. "
+              f"Frontier advanced — no operator steps.")
 
 
 if __name__ == "__main__":
