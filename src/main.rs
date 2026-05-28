@@ -14,8 +14,6 @@ mod parser;
 use std::env;
 use std::fs;
 use std::process::{self, Command};
-use std::thread;
-use std::time::{Duration, Instant};
 
 use lexer::Lexer;
 use parser::Parser;
@@ -101,36 +99,13 @@ fn compile_c_and_run(c_src: &str, src_path: &str) -> i32 {
         }
     }
 
-    // Run the compiled program under a wall-clock timeout — otherwise an infinite
-    // loop (a codegen bug or a runaway test program) blocks .status() forever,
-    // leaving the bin file undeleted and a CPU core pegged. 30s is generous for
-    // our deterministic test programs (which all return immediately).
-    let mut child = match Command::new(&binfile).spawn() {
-        Ok(c) => c,
+    let ran = Command::new(&binfile).status();
+    let _ = fs::remove_file(&binfile);
+    match ran {
+        Ok(s) => s.code().unwrap_or(ERR_EXIT),
         Err(e) => {
             eprintln!("zigrun: cannot execute compiled binary: {e}");
-            let _ = fs::remove_file(&binfile);
-            return ERR_EXIT;
+            ERR_EXIT
         }
-    };
-    let deadline = Instant::now() + Duration::from_secs(30);
-    let exit_code = loop {
-        match child.try_wait() {
-            Ok(Some(s)) => break s.code().unwrap_or(ERR_EXIT),
-            Ok(None) if Instant::now() >= deadline => {
-                let _ = child.kill();
-                let _ = child.wait();
-                eprintln!("zigrun: binary exceeded 30s timeout (likely infinite loop)");
-                break ERR_EXIT;
-            }
-            Ok(None) => thread::sleep(Duration::from_millis(50)),
-            Err(e) => {
-                eprintln!("zigrun: waiting on binary: {e}");
-                let _ = child.kill();
-                break ERR_EXIT;
-            }
-        }
-    };
-    let _ = fs::remove_file(&binfile);
-    exit_code
+    }
 }

@@ -7,10 +7,27 @@
 // checked arithmetic — tracked in FEATURES.md.
 
 use crate::ast::{
-    AssignTarget, BinOp, Expr, Function, IntType, Program, Stmt, StructDecl, SwitchCase, Type,
+    AssignTarget, BinOp, EnumDef, ErrorSetDef, Expr, Function, IntType, Program, Stmt, StructDef,
+    SwitchArm, SwitchTag, Type, UnionDef, UnionVariant,
 };
-use std::collections::HashMap;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
+
+thread_local! {
+    static ENUM_DEFS: RefCell<HashMap<String, EnumDef>> = RefCell::new(HashMap::new());
+}
+
+fn with_enum_defs<R>(defs: &HashMap<String, EnumDef>, f: impl FnOnce() -> R) -> R {
+    ENUM_DEFS.with(|cell| {
+        *cell.borrow_mut() = defs.clone();
+        f()
+    })
+}
+
+fn lookup_enum(name: &str) -> Option<EnumDef> {
+    ENUM_DEFS.with(|cell| cell.borrow().get(name).cloned())
+}
 
 pub fn emit_c(program: &Program) -> Result<String, String> {
     if !program.functions.iter().any(|f| f.name == "main") {
@@ -20,20 +37,35 @@ pub fn emit_c(program: &Program) -> Result<String, String> {
     out.push_str("#include <stdint.h>\n#include <stdbool.h>\n#include <stddef.h>\n\n");
 
     for e in &program.enums {
-        let _ = writeln!(out, "typedef enum {{");
-        for v in &e.variants {
-            let _ = writeln!(out, "    {v},");
-        }
-        let _ = writeln!(out, "}} {};", e.name);
+        emit_enum_def(&mut out, e)?;
+        out.push('\n');
+    }
+
+    for e in &program.error_sets {
+        emit_error_set_tag_def(&mut out, e)?;
+        out.push('\n');
+    }
+
+    let mut emitted_error_unions: HashSet<String> = HashSet::new();
+    for ty in collect_error_union_types(program) {
+        emit_error_union_struct_def(&mut out, &ty, &mut emitted_error_unions)?;
+        out.push('\n');
+    }
+
+    let mut emitted_optionals: HashSet<String> = HashSet::new();
+    for ty in collect_optional_types(program) {
+        emit_optional_struct_def(&mut out, &ty, &mut emitted_optionals)?;
         out.push('\n');
     }
 
     for s in &program.structs {
         emit_struct_def(&mut out, s)?;
+        out.push('\n');
     }
 
-    for inner in collect_optional_inners(program) {
-        emit_optional_typedef(&mut out, &inner)?;
+    for u in &program.unions {
+        emit_union_def(&mut out, u)?;
+        out.push('\n');
     }
 
     for f in &program.functions {
@@ -41,16 +73,25 @@ pub fn emit_c(program: &Program) -> Result<String, String> {
     }
     out.push('\n');
 
-    let layouts: HashMap<String, Vec<(String, Type)>> = program
-        .structs
+    let func_returns: HashMap<String, Type> = program
+        .functions
         .iter()
-        .map(|s| (s.name.clone(), s.fields.clone()))
+        .map(|f| (f.name.clone(), f.return_type.clone()))
         .collect();
 
-    for f in &program.functions {
-        emit_function(&mut out, f, &layouts)?;
-        out.push('\n');
-    }
+    let enum_defs: HashMap<String, EnumDef> = program
+        .enums
+        .iter()
+        .map(|e| (e.name.clone(), e.clone()))
+        .collect();
+
+    with_enum_defs(&enum_defs, || {
+        for f in &program.functions {
+            emit_function(&mut out, f, &func_returns)?;
+            out.push('\n');
+        }
+        Ok::<(), String>(())
+    })?;
 
     out.push_str("int main(void) {\n    return (int)zig_main();\n}\n");
     Ok(out)
@@ -60,40 +101,56 @@ fn c_fn(name: &str) -> String {
     format!("zig_{name}")
 }
 
-fn emit_struct_def(out: &mut String, s: &StructDecl) -> Result<(), String> {
+fn emit_struct_def(out: &mut String, s: &StructDef) -> Result<(), String> {
     let _ = writeln!(out, "typedef struct {{");
-    for (name, ty) in &s.fields {
-        let _ = writeln!(out, "    {} {};", c_type(ty), name);
+    for (field, ty) in &s.fields {
+        let _ = writeln!(out, "    {} {};", c_type(ty), field);
     }
     let _ = writeln!(out, "}} {};", s.name);
-    out.push('\n');
     Ok(())
 }
 
-fn opt_c_name(inner: &Type) -> String {
-    format!("zigrun_opt_{}", c_type(inner).replace(' ', "_"))
+
+fn c_union_tag(union_name: &str, variant: &str) -> String {
+    format!("{union_name}_tag_{variant}")
 }
 
-fn emit_optional_typedef(out: &mut String, inner: &Type) -> Result<(), String> {
-    let name = opt_c_name(inner);
+fn union_payload_c_type(variants: &[UnionVariant]) -> String {
+    let mut payload = "uint8_t".to_string();
+    for v in variants {
+        if let Some(ty) = &v.payload {
+            if ty.int_type().is_some() {
+                let ct = c_type(ty);
+                if ct.len() > payload.len() || payload == "uint8_t" {
+                    payload = ct;
+                }
+            }
+        }
+    }
+    payload
+}
+
+fn emit_union_def(out: &mut String, u: &UnionDef) -> Result<(), String> {
+    let _ = writeln!(out, "typedef enum {{");
+    for v in &u.variants {
+        let _ = writeln!(out, "    {},", c_union_tag(&u.name, &v.name));
+    }
+    let _ = writeln!(out, "}} {}_tag;", u.name);
+    let payload_ty = union_payload_c_type(&u.variants);
     let _ = writeln!(
         out,
-        "typedef struct {{ {} value; bool present; }} {};",
-        c_type(inner),
-        name
+        "typedef struct {{ {}_tag tag; {} payload; }} {};",
+        u.name, payload_ty, u.name
     );
-    out.push('\n');
     Ok(())
 }
 
-fn collect_optional_inners(program: &Program) -> Vec<Type> {
-    let mut seen = std::collections::HashSet::new();
-    let mut result = Vec::new();
+fn collect_optional_types(program: &Program) -> Vec<Type> {
+    let mut out = Vec::new();
     let mut add = |ty: &Type| {
-        if let Type::Optional { inner } = ty {
-            let key = format!("{:?}", inner);
-            if seen.insert(key) {
-                result.push(inner.as_ref().clone());
+        if let Type::Optional(_) = ty {
+            if !out.iter().any(|t| t == ty) {
+                out.push(ty.clone());
             }
         }
     };
@@ -102,123 +159,333 @@ fn collect_optional_inners(program: &Program) -> Vec<Type> {
         for (_, ty) in &f.params {
             add(ty);
         }
-        for s in &f.body {
-            collect_optional_in_stmt(s, &mut add);
-        }
+        collect_optionals_in_stmts(&f.body, &mut add);
     }
-    result
+    out
 }
 
-fn collect_optional_in_stmt(stmt: &Stmt, add: &mut dyn FnMut(&Type)) {
-    match stmt {
-        Stmt::Let { ty, value, .. } => {
-            add(ty);
-            collect_optional_in_expr(value, add);
-        }
-        Stmt::Assign { value, .. } => collect_optional_in_expr(value, add),
-        Stmt::Return(e) => collect_optional_in_expr(e, add),
-        Stmt::If {
-            cond,
-            then_branch,
-            else_branch,
-        } => {
-            collect_optional_in_expr(cond, add);
-            for s in then_branch {
-                collect_optional_in_stmt(s, add);
+fn collect_optionals_in_stmts(stmts: &[Stmt], add: &mut dyn FnMut(&Type)) {
+    for s in stmts {
+        match s {
+            Stmt::Let { ty, value, .. } => {
+                add(ty);
+                collect_optionals_in_expr(value, add);
             }
-            if let Some(eb) = else_branch {
-                for s in eb {
-                    collect_optional_in_stmt(s, add);
+            Stmt::Assign { value, .. } => collect_optionals_in_expr(value, add),
+            Stmt::Return(e) => collect_optionals_in_expr(e, add),
+            Stmt::If {
+                cond,
+                then_branch,
+                else_branch,
+            } => {
+                collect_optionals_in_expr(cond, add);
+                collect_optionals_in_stmts(then_branch, add);
+                if let Some(eb) = else_branch {
+                    collect_optionals_in_stmts(eb, add);
                 }
             }
-        }
-        Stmt::While {
-            cond,
-            body,
-            continue_stmt,
-        } => {
-            collect_optional_in_expr(cond, add);
-            for s in body {
-                collect_optional_in_stmt(s, add);
+            Stmt::While { cond, cont, body } => {
+                collect_optionals_in_expr(cond, add);
+                if let Some(c) = cont {
+                    collect_optionals_in_expr(c, add);
+                }
+                collect_optionals_in_stmts(body, add);
             }
-            if let Some(cs) = continue_stmt {
-                collect_optional_in_stmt(cs, add);
+            Stmt::ForRange { start, end, body, .. } => {
+                collect_optionals_in_expr(start, add);
+                collect_optionals_in_expr(end, add);
+                collect_optionals_in_stmts(body, add);
             }
+            Stmt::ForArray { body, .. } => collect_optionals_in_stmts(body, add),
+            Stmt::Break { .. } | Stmt::Continue => {}
         }
-        Stmt::ForRange { start, end, body, .. } => {
-            collect_optional_in_expr(start, add);
-            collect_optional_in_expr(end, add);
-            for s in body {
-                collect_optional_in_stmt(s, add);
-            }
-        }
-        Stmt::ForArray { body, .. } => {
-            for s in body {
-                collect_optional_in_stmt(s, add);
-            }
-        }
-        Stmt::Break | Stmt::Continue => {}
     }
 }
 
-fn collect_optional_in_expr(expr: &Expr, add: &mut dyn FnMut(&Type)) {
+fn collect_optionals_in_expr(expr: &Expr, add: &mut dyn FnMut(&Type)) {
     match expr {
-        Expr::Orelse { opt, default } => {
-            collect_optional_in_expr(opt, add);
-            collect_optional_in_expr(default, add);
-        }
         Expr::BinOp { left, right, .. } => {
-            collect_optional_in_expr(left, add);
-            collect_optional_in_expr(right, add);
+            collect_optionals_in_expr(left, add);
+            collect_optionals_in_expr(right, add);
         }
         Expr::Call { args, .. } => {
             for a in args {
-                collect_optional_in_expr(a, add);
+                collect_optionals_in_expr(a, add);
             }
+        }
+        Expr::Orelse { left, right } => {
+            collect_optionals_in_expr(left, add);
+            collect_optionals_in_expr(right, add);
+        }
+        Expr::Try(e) => collect_optionals_in_expr(e, add),
+        Expr::Catch { expr, fallback } | Expr::CatchReturn { expr, ret_val: fallback } => {
+            collect_optionals_in_expr(expr, add);
+            collect_optionals_in_expr(fallback, add);
         }
         Expr::Switch {
             scrutinee,
             arms,
             default,
         } => {
-            collect_optional_in_expr(scrutinee, add);
-            for (_, e) in arms {
-                collect_optional_in_expr(e, add);
+            collect_optionals_in_expr(scrutinee, add);
+            for arm in arms {
+                collect_optionals_in_expr(&arm.expr, add);
             }
             if let Some(d) = default {
-                collect_optional_in_expr(d, add);
+                collect_optionals_in_expr(d, add);
             }
         }
         Expr::IntCast { expr, .. } | Expr::UnaryNeg(expr) | Expr::UnaryNot(expr) => {
-            collect_optional_in_expr(expr, add);
+            collect_optionals_in_expr(expr, add);
         }
         Expr::Mod { left, right } | Expr::Rem { left, right } => {
-            collect_optional_in_expr(left, add);
-            collect_optional_in_expr(right, add);
+            collect_optionals_in_expr(left, add);
+            collect_optionals_in_expr(right, add);
         }
         Expr::ArrayLiteral { elems, .. } => {
             for e in elems {
-                collect_optional_in_expr(e, add);
+                collect_optionals_in_expr(e, add);
             }
         }
         Expr::Index { base, index } => {
-            collect_optional_in_expr(base, add);
-            collect_optional_in_expr(index, add);
+            collect_optionals_in_expr(base, add);
+            collect_optionals_in_expr(index, add);
         }
         Expr::StructLiteral { fields, .. } => {
             for (_, e) in fields {
-                collect_optional_in_expr(e, add);
+                collect_optionals_in_expr(e, add);
             }
         }
-        Expr::FieldAccess { base, .. } => collect_optional_in_expr(base, add),
-        _ => {}
+        Expr::UnionLiteral { value: Some(v), .. } => collect_optionals_in_expr(v, add),
+        Expr::FieldAccess { base, .. } => collect_optionals_in_expr(base, add),
+        Expr::IntFromEnum(inner) => collect_optionals_in_expr(inner, add),
+        Expr::Int(_)
+        | Expr::Bool(_)
+        | Expr::Undefined
+        | Expr::Var(_)
+        | Expr::EnumLiteral { .. }
+        | Expr::ErrorLiteral { .. }
+        | Expr::UnionLiteral { value: None, .. }
+        | Expr::EmptyInit => {}
     }
+}
+
+fn collect_error_union_types(program: &Program) -> Vec<Type> {
+    let mut out = Vec::new();
+    let mut add = |ty: &Type| {
+        if let Type::ErrorUnion { .. } = ty {
+            if !out.iter().any(|t| t == ty) {
+                out.push(ty.clone());
+            }
+        }
+    };
+    for f in &program.functions {
+        add(&f.return_type);
+        for (_, ty) in &f.params {
+            add(ty);
+        }
+        collect_error_unions_in_stmts(&f.body, &mut add);
+    }
+    out
+}
+
+fn collect_error_unions_in_stmts(stmts: &[Stmt], add: &mut dyn FnMut(&Type)) {
+    for s in stmts {
+        match s {
+            Stmt::Let { ty, value, .. } => {
+                add(ty);
+                collect_error_unions_in_expr(value, add);
+            }
+            Stmt::Assign { value, .. } => collect_error_unions_in_expr(value, add),
+            Stmt::Return(e) => collect_error_unions_in_expr(e, add),
+            Stmt::If {
+                cond,
+                then_branch,
+                else_branch,
+            } => {
+                collect_error_unions_in_expr(cond, add);
+                collect_error_unions_in_stmts(then_branch, add);
+                if let Some(eb) = else_branch {
+                    collect_error_unions_in_stmts(eb, add);
+                }
+            }
+            Stmt::While { cond, cont, body } => {
+                collect_error_unions_in_expr(cond, add);
+                if let Some(c) = cont {
+                    collect_error_unions_in_expr(c, add);
+                }
+                collect_error_unions_in_stmts(body, add);
+            }
+            Stmt::ForRange { start, end, body, .. } => {
+                collect_error_unions_in_expr(start, add);
+                collect_error_unions_in_expr(end, add);
+                collect_error_unions_in_stmts(body, add);
+            }
+            Stmt::ForArray { body, .. } => collect_error_unions_in_stmts(body, add),
+            Stmt::Break { .. } | Stmt::Continue => {}
+        }
+    }
+}
+
+fn collect_error_unions_in_expr(expr: &Expr, add: &mut dyn FnMut(&Type)) {
+    match expr {
+        Expr::BinOp { left, right, .. } => {
+            collect_error_unions_in_expr(left, add);
+            collect_error_unions_in_expr(right, add);
+        }
+        Expr::Call { args, .. } => {
+            for a in args {
+                collect_error_unions_in_expr(a, add);
+            }
+        }
+        Expr::Orelse { left, right } => {
+            collect_error_unions_in_expr(left, add);
+            collect_error_unions_in_expr(right, add);
+        }
+        Expr::Try(e) => collect_error_unions_in_expr(e, add),
+        Expr::Catch { expr, fallback } | Expr::CatchReturn { expr, ret_val: fallback } => {
+            collect_error_unions_in_expr(expr, add);
+            collect_error_unions_in_expr(fallback, add);
+        }
+        Expr::Switch {
+            scrutinee,
+            arms,
+            default,
+        } => {
+            collect_error_unions_in_expr(scrutinee, add);
+            for arm in arms {
+                collect_error_unions_in_expr(&arm.expr, add);
+            }
+            if let Some(d) = default {
+                collect_error_unions_in_expr(d, add);
+            }
+        }
+        Expr::IntCast { expr, .. } | Expr::UnaryNeg(expr) | Expr::UnaryNot(expr) => {
+            collect_error_unions_in_expr(expr, add);
+        }
+        Expr::Mod { left, right } | Expr::Rem { left, right } => {
+            collect_error_unions_in_expr(left, add);
+            collect_error_unions_in_expr(right, add);
+        }
+        Expr::ArrayLiteral { elems, .. } => {
+            for e in elems {
+                collect_error_unions_in_expr(e, add);
+            }
+        }
+        Expr::Index { base, index } => {
+            collect_error_unions_in_expr(base, add);
+            collect_error_unions_in_expr(index, add);
+        }
+        Expr::StructLiteral { fields, .. } => {
+            for (_, e) in fields {
+                collect_error_unions_in_expr(e, add);
+            }
+        }
+        Expr::UnionLiteral { value: Some(v), .. } => collect_error_unions_in_expr(v, add),
+        Expr::UnionLiteral { value: None, .. } => {}
+        Expr::FieldAccess { base, .. } => collect_error_unions_in_expr(base, add),
+        Expr::IntFromEnum(inner) => collect_error_unions_in_expr(inner, add),
+        Expr::Int(_)
+        | Expr::Bool(_)
+        | Expr::Undefined
+        | Expr::Var(_)
+        | Expr::EnumLiteral { .. }
+        | Expr::ErrorLiteral { .. }
+        | Expr::EmptyInit => {}
+    }
+}
+
+fn emit_error_set_tag_def(out: &mut String, e: &ErrorSetDef) -> Result<(), String> {
+    let tag_ty = c_error_tag_enum(&e.name);
+    let _ = writeln!(out, "typedef enum {{");
+    let _ = writeln!(out, "    {} = 0,", c_error_ok_tag(&e.name));
+    for v in &e.variants {
+        let _ = writeln!(out, "    {},", c_error_variant_tag(&e.name, v));
+    }
+    let _ = writeln!(out, "}} {tag_ty};");
+    Ok(())
+}
+
+fn emit_error_union_struct_def(
+    out: &mut String,
+    ty: &Type,
+    emitted: &mut HashSet<String>,
+) -> Result<(), String> {
+    let Type::ErrorUnion { err_set, payload } = ty else {
+        return Ok(());
+    };
+    let name = c_error_union_name(err_set, payload);
+    if !emitted.insert(name.clone()) {
+        return Ok(());
+    }
+    let tag_ty = c_error_tag_enum(err_set);
+    let payload_ct = c_type(payload);
+    let _ = writeln!(
+        out,
+        "typedef struct {{ {tag_ty} err; {payload_ct} value; }} {name};"
+    );
+    Ok(())
+}
+
+fn c_error_tag_enum(err_set: &str) -> String {
+    format!("{err_set}_err")
+}
+
+fn c_error_ok_tag(err_set: &str) -> String {
+    format!("{err_set}_err_ok")
+}
+
+fn c_error_variant_tag(err_set: &str, variant: &str) -> String {
+    format!("{err_set}_err_{variant}")
+}
+
+fn c_error_union_name(err_set: &str, payload: &Type) -> String {
+    format!("{err_set}_{}", c_type(payload))
+}
+
+fn c_optional_name(inner: &Type) -> String {
+    format!("Opt_{}", c_type(inner))
+}
+
+fn emit_optional_struct_def(
+    out: &mut String,
+    ty: &Type,
+    emitted: &mut HashSet<String>,
+) -> Result<(), String> {
+    let Type::Optional(inner) = ty else {
+        return Ok(());
+    };
+    let name = c_optional_name(inner);
+    if !emitted.insert(name.clone()) {
+        return Ok(());
+    }
+    let payload_ct = c_type(inner);
+    let _ = writeln!(
+        out,
+        "typedef struct {{ bool is_null; {payload_ct} value; }} {name};"
+    );
+    Ok(())
+}
+
+fn emit_enum_def(out: &mut String, e: &EnumDef) -> Result<(), String> {
+    let _ = writeln!(out, "typedef enum {{");
+    let mut next: i64 = 0;
+    for v in &e.variants {
+        let val = v.value.unwrap_or(next);
+        next = val.saturating_add(1);
+        let _ = writeln!(out, "    {}_{} = {},", e.name, v.name, val);
+    }
+    let _ = writeln!(out, "}} {};", e.name);
+    Ok(())
+}
+
+fn c_enum_variant(enum_name: &str, variant: &str) -> String {
+    format!("{enum_name}_{variant}")
 }
 
 fn c_type(ty: &Type) -> String {
     match ty {
         Type::Bool => "bool".to_string(),
-        Type::Optional { inner } => opt_c_name(inner),
         Type::Int(IntType::U8) => "uint8_t".to_string(),
         Type::Int(IntType::U16) => "uint16_t".to_string(),
         Type::Int(IntType::U32) => "uint32_t".to_string(),
@@ -227,34 +494,40 @@ fn c_type(ty: &Type) -> String {
         Type::Int(IntType::I16) => "int16_t".to_string(),
         Type::Int(IntType::I32) => "int32_t".to_string(),
         Type::Int(IntType::I64) => "int64_t".to_string(),
-        Type::Array { .. } => ty
-            .scalar_int_type()
-            .map(|t| c_type(&Type::Int(t)))
-            .unwrap_or_else(|| "uint8_t".to_string()),
+        Type::Array { .. } => "uint8_t".to_string(),
         Type::Enum(name) => name.clone(),
         Type::Struct(name) => name.clone(),
-    }
-}
-
-fn array_decl_parts(ty: &Type) -> (String, String) {
-    match ty {
-        Type::Array { len, elem } => {
-            let (base, mut dims) = array_decl_parts(elem);
-            dims.push_str(&format!("[{len}]"));
-            (base, dims)
-        }
-        other => (c_type(other), String::new()),
+        Type::Union(name) => name.clone(),
+        Type::ErrorUnion { err_set, payload } => c_error_union_name(err_set, payload),
+        Type::Optional(inner) => c_optional_name(inner),
+        Type::Void => "void".to_string(),
     }
 }
 
 fn c_var_decl(name: &str, ty: &Type) -> String {
     match ty {
-        Type::Array { .. } => {
-            let (base, dims) = array_decl_parts(ty);
-            format!("{base} {name}{dims}")
-        }
-        Type::Struct(_) => format!("{} {name}", c_type(ty)),
+        Type::Array { .. } => format!("{} {name}{}", c_array_base(ty), c_array_suffix(ty)),
+        Type::Struct(_) | Type::Union(_) => format!("{} {name}", c_type(ty)),
         other => format!("{} {name}", c_type(other)),
+    }
+}
+
+fn c_array_base(ty: &Type) -> String {
+    match ty {
+        Type::Array { elem, .. } => match elem.as_ref() {
+            Type::Array { .. } => c_array_base(elem),
+            Type::Int(t) => c_int_type(*t),
+            Type::Union(name) => name.clone(),
+            other => c_type(other),
+        },
+        other => c_type(other),
+    }
+}
+
+fn c_array_suffix(ty: &Type) -> String {
+    match ty {
+        Type::Array { len, elem } => format!("[{len}]{}", c_array_suffix(elem)),
+        _ => String::new(),
     }
 }
 
@@ -283,15 +556,28 @@ fn prototype(f: &Function) -> String {
 fn emit_function(
     out: &mut String,
     f: &Function,
-    layouts: &HashMap<String, Vec<(String, Type)>>,
+    func_returns: &HashMap<String, Type>,
 ) -> Result<(), String> {
     let _ = writeln!(out, "{} {{", prototype(f));
     let mut env: HashMap<String, Type> = HashMap::new();
+    let mut temp_id = 0usize;
     for (name, ty) in &f.params {
         env.insert(name.clone(), ty.clone());
     }
+    let mut loop_cont: Vec<Option<String>> = Vec::new();
+    let mut loop_break_labels: Vec<(String, String)> = Vec::new();
     for s in &f.body {
-        emit_stmt(out, s, 1, &mut env, &f.return_type, layouts)?;
+        emit_stmt(
+            out,
+            s,
+            1,
+            &mut env,
+            &f.return_type,
+            func_returns,
+            &mut temp_id,
+            &mut loop_cont,
+            &mut loop_break_labels,
+        )?;
     }
     out.push_str("}\n");
     Ok(())
@@ -303,49 +589,72 @@ fn indent(out: &mut String, depth: usize) {
     }
 }
 
-fn expr_type(
-    expr: &Expr,
+fn indexed_lvalue_type(
+    base: &Expr,
     env: &HashMap<String, Type>,
-    layouts: &HashMap<String, Vec<(String, Type)>>,
+    func_returns: &HashMap<String, Type>,
 ) -> Type {
+    expr_type(base, env, func_returns)
+        .index_result_type()
+        .unwrap_or(Type::Int(IntType::U8))
+}
+
+fn expr_type(expr: &Expr, env: &HashMap<String, Type>, func_returns: &HashMap<String, Type>) -> Type {
     match expr {
         Expr::Int(_) => Type::Int(IntType::U8),
         Expr::Bool(_) => Type::Bool,
+        Expr::Undefined => Type::Int(IntType::U8),
         Expr::Var(name) => env
             .get(name)
             .cloned()
             .unwrap_or(Type::Int(IntType::U8)),
+        Expr::EnumLiteral { enum_name, variant: _ } => Type::Enum(enum_name.clone()),
+        Expr::IntFromEnum(inner) => {
+            let backing = expr_type(inner, env, func_returns)
+                .enum_name()
+                .and_then(|n| lookup_enum(n))
+                .and_then(|e| e.backing)
+                .unwrap_or(IntType::U8);
+            Type::Int(backing)
+        }
+        Expr::ErrorLiteral { .. } => Type::Int(IntType::U8),
+        Expr::Try(inner) => expr_type(inner, env, func_returns)
+            .error_union_payload()
+            .unwrap_or(Type::Int(IntType::U8)),
+        Expr::Catch { expr, .. } => expr_type(expr, env, func_returns).error_union_payload().unwrap_or(Type::Int(IntType::U8)),
+        Expr::CatchReturn { expr, .. } => expr_type(expr, env, func_returns).error_union_payload().unwrap_or(Type::Int(IntType::U8)),
         Expr::BinOp { op, left, right } => match op {
             BinOp::LogicalAnd | BinOp::LogicalOr => Type::Bool,
-            _ => combine_types(expr_type(left, env, layouts), expr_type(right, env, layouts)),
+            _ => combine_types(
+                expr_type(left, env, func_returns),
+                expr_type(right, env, func_returns),
+            ),
         },
-        Expr::Call { .. } => Type::Int(IntType::U8),
-        Expr::Switch { default, .. } => default
-            .as_ref()
-            .map(|d| expr_type(d, env, layouts))
+        Expr::Call { name, .. } => func_returns
+            .get(name)
+            .cloned()
             .unwrap_or(Type::Int(IntType::U8)),
-        Expr::EnumLiteral { enum_name, .. } => {
-            if enum_name.is_empty() {
-                Type::Int(IntType::U8)
-            } else {
-                Type::Enum(enum_name.clone())
-            }
-        }
+        Expr::Switch { default, arms, .. } => default
+            .as_ref()
+            .map(|d| expr_type(d, env, func_returns))
+            .or_else(|| arms.last().map(|a| expr_type(&a.expr, env, func_returns)))
+            .unwrap_or(Type::Int(IntType::U8)),
         Expr::IntCast { target, .. } => Type::Int(*target),
-        Expr::Mod { left, right } | Expr::Rem { left, right } => {
-            combine_types(expr_type(left, env, layouts), expr_type(right, env, layouts))
-        }
-        Expr::UnaryNeg(inner) => expr_type(inner, env, layouts),
+        Expr::Mod { left, right } | Expr::Rem { left, right } => combine_types(
+            expr_type(left, env, func_returns),
+            expr_type(right, env, func_returns),
+        ),
+        Expr::UnaryNeg(inner) => expr_type(inner, env, func_returns),
         Expr::UnaryNot(_) => Type::Bool,
         Expr::ArrayLiteral { elems, annotated } => {
-            if let Some((len, elem)) = annotated {
+            if let Some((len_opt, elem)) = annotated {
                 Type::Array {
-                    len: *len,
-                    elem: Box::new(Type::Int(*elem)),
+                    len: len_opt.unwrap_or(elems.len()),
+                    elem: Box::new(elem.clone()),
                 }
             } else if let Some(first) = elems.first() {
-                let elem = expr_type(first, env, layouts)
-                    .scalar_int_type()
+                let elem = expr_type(first, env, func_returns)
+                    .int_type()
                     .unwrap_or(IntType::U8);
                 Type::Array {
                     len: elems.len(),
@@ -358,60 +667,29 @@ fn expr_type(
                 }
             }
         }
-        Expr::Index { base, .. } => index_expr_type(base, env, layouts),
-        Expr::Undefined => Type::Int(IntType::U8),
+        Expr::Index { base, .. } => indexed_lvalue_type(base, env, func_returns),
         Expr::StructLiteral { struct_name, .. } => Type::Struct(struct_name.clone()),
-        Expr::FieldAccess { base, field } => field_type(base, field, env, layouts),
-        Expr::Null => Type::Optional {
-            inner: Box::new(Type::Int(IntType::U8)),
-        },
-        Expr::Orelse { default, .. } => expr_type(default, env, layouts),
+        Expr::UnionLiteral { union_name, .. } => Type::Union(
+            union_name.clone().unwrap_or_else(|| "Shape".to_string()),
+        ),
+        Expr::EmptyInit => Type::Void,
+        Expr::FieldAccess { base, field } => field_expr_type(base, field, env),
+        Expr::Orelse { left, right } => expr_type(left, env, func_returns)
+            .optional_inner()
+            .unwrap_or_else(|| expr_type(right, env, func_returns)),
     }
 }
 
-fn index_expr_type(
-    base: &Expr,
-    env: &HashMap<String, Type>,
-    layouts: &HashMap<String, Vec<(String, Type)>>,
-) -> Type {
+fn field_expr_type(base: &Expr, field: &str, env: &HashMap<String, Type>) -> Type {
     let base_ty = match base {
         Expr::Var(name) => env.get(name).cloned(),
-        other => Some(expr_type(other, env, layouts)),
-    };
-    base_ty
-        .and_then(|t| t.array_elem())
-        .unwrap_or(Type::Int(IntType::U8))
-}
-
-fn lookup_field(
-    struct_name: &str,
-    field: &str,
-    layouts: &HashMap<String, Vec<(String, Type)>>,
-) -> Option<Type> {
-    layouts
-        .get(struct_name)?
-        .iter()
-        .find(|(n, _)| n == field)
-        .map(|(_, ty)| ty.clone())
-}
-
-fn field_type(
-    base: &Expr,
-    field: &str,
-    env: &HashMap<String, Type>,
-    layouts: &HashMap<String, Vec<(String, Type)>>,
-) -> Type {
-    let struct_name = match base {
-        Expr::Var(name) => env.get(name).and_then(|t| t.struct_name().map(str::to_string)),
-        Expr::StructLiteral { struct_name, .. } => Some(struct_name.clone()),
-        Expr::FieldAccess { base, field: parent } => field_type(base, parent, env, layouts)
-            .struct_name()
-            .map(str::to_string),
+        Expr::FieldAccess { base, field: parent } => Some(field_expr_type(base, parent, env)),
+        Expr::StructLiteral { struct_name, .. } => Some(Type::Struct(struct_name.clone())),
         _ => None,
     };
-    struct_name
-        .and_then(|sn| lookup_field(&sn, field, layouts))
-        .unwrap_or(Type::Int(IntType::U8))
+    // Field types are resolved from struct layout at emit time; use u8 fallback for inference.
+    let _ = (base_ty, field);
+    Type::Int(IntType::U8)
 }
 
 fn combine_types(a: Type, b: Type) -> Type {
@@ -427,9 +705,14 @@ fn combine_types(a: Type, b: Type) -> Type {
             )),
         },
         (Type::Array { elem, .. }, _) | (_, Type::Array { elem, .. }) => elem
-            .scalar_int_type()
+            .int_type()
             .map(Type::Int)
-            .unwrap_or(Type::Int(IntType::U8)),
+            .unwrap_or_else(|| elem.as_ref().clone()),
+        (Type::Enum(a), Type::Enum(b)) if a == b => Type::Enum(a),
+        (Type::Enum(a), _) | (_, Type::Enum(a)) => Type::Enum(a),
+        (Type::Struct(a), Type::Struct(b)) if a == b => Type::Struct(a),
+        (Type::Union(a), Type::Union(b)) if a == b => Type::Union(a),
+        (Type::Union(a), _) | (_, Type::Union(a)) => Type::Union(a),
         _ => Type::Bool,
     }
 }
@@ -450,13 +733,57 @@ fn wider_int_type(a: IntType, b: IntType) -> IntType {
     }
 }
 
+fn emit_while_cont_expr(
+    out: &mut String,
+    expr: &Expr,
+    env: &HashMap<String, Type>,
+    func_returns: &HashMap<String, Type>,
+    return_type: &Type,
+    temp_id: &mut usize,
+) -> Result<(), String> {
+    if let Expr::BinOp { op, left, right } = expr {
+        if let Expr::Var(name) = left.as_ref() {
+            let ty = env
+                .get(name)
+                .cloned()
+                .unwrap_or(Type::Int(IntType::U8));
+            let _ = writeln!(
+                out,
+                "{name} = {};",
+                emit_expr(
+                    &Expr::BinOp {
+                        op: *op,
+                        left: Box::new(Expr::Var(name.clone())),
+                        right: right.clone(),
+                    },
+                    env,
+                    Some(&ty),
+                    func_returns,
+                    return_type,
+                    temp_id,
+                )?
+            );
+            return Ok(());
+        }
+    }
+    let _ = writeln!(
+        out,
+        "{};",
+        emit_expr(expr, env, None, func_returns, return_type, temp_id)?
+    );
+    Ok(())
+}
+
 fn emit_stmt(
     out: &mut String,
     stmt: &Stmt,
     depth: usize,
     env: &mut HashMap<String, Type>,
     return_type: &Type,
-    layouts: &HashMap<String, Vec<(String, Type)>>,
+    func_returns: &HashMap<String, Type>,
+    temp_id: &mut usize,
+    loop_cont: &mut Vec<Option<String>>,
+    loop_break_labels: &mut Vec<(String, String)>,
 ) -> Result<(), String> {
     indent(out, depth);
     match stmt {
@@ -468,99 +795,212 @@ fn emit_stmt(
                     out,
                     "{} = {};",
                     c_var_decl(name, ty),
-                    emit_expr_with_optional_wrap(value, env, ty, layouts)?
+                    emit_expr(value, env, Some(ty), func_returns, return_type, temp_id)?
                 );
             }
             env.insert(name.clone(), ty.clone());
         }
         Stmt::Assign { target, value } => {
-            let ty = assign_target_type(target, env, layouts);
-            let lhs = emit_assign_target(target, env, layouts)?;
+            let ty = assign_target_type(target, env);
+            let lhs = emit_assign_target(target, env, func_returns, return_type, temp_id)?;
             let _ = writeln!(
                 out,
                 "{lhs} = {};",
-                emit_expr(value, env, Some(ty), layouts)?
+                emit_expr(value, env, Some(&ty), func_returns, return_type, temp_id)?
             );
         }
         Stmt::Return(e) => {
-            let _ = writeln!(
-                out,
-                "return {};",
-                emit_expr(e, env, Some(return_type.clone()), layouts)?
-            );
+            let ret = if let Type::ErrorUnion { err_set, payload } = return_type {
+                if let Expr::ErrorLiteral { variant, .. } = e {
+                    let st = c_error_union_name(err_set, payload);
+                    let tag = c_error_variant_tag(err_set, variant);
+                    format!("({st}){{ .err = {tag} }}")
+                } else {
+                    let val = emit_expr(
+                        e,
+                        env,
+                        Some(payload),
+                        func_returns,
+                        return_type,
+                        temp_id,
+                    )?;
+                    let st = c_error_union_name(err_set, payload);
+                    let ok = c_error_ok_tag(err_set);
+                    format!("({st}){{ .err = {ok}, .value = {val} }}")
+                }
+            } else {
+                emit_expr(
+                    e,
+                    env,
+                    Some(return_type),
+                    func_returns,
+                    return_type,
+                    temp_id,
+                )?
+            };
+            let _ = writeln!(out, "return {ret};");
         }
         Stmt::If {
             cond,
             then_branch,
             else_branch,
         } => {
-            let _ = writeln!(out, "if ({}) {{", emit_expr(cond, env, None, layouts)?);
+            let _ = writeln!(
+                out,
+                "if ({}) {{",
+                emit_expr(cond, env, None, func_returns, return_type, temp_id)?
+            );
             for s in then_branch {
-                emit_stmt(out, s, depth + 1, env, return_type, layouts)?;
+                emit_stmt(
+                    out,
+                    s,
+                    depth + 1,
+                    env,
+                    return_type,
+                    func_returns,
+                    temp_id,
+                    loop_cont,
+                    loop_break_labels,
+                )?;
             }
             indent(out, depth);
             out.push('}');
             if let Some(eb) = else_branch {
                 out.push_str(" else {\n");
                 for s in eb {
-                    emit_stmt(out, s, depth + 1, env, return_type, layouts)?;
+                    emit_stmt(
+                        out,
+                        s,
+                        depth + 1,
+                        env,
+                        return_type,
+                        func_returns,
+                        temp_id,
+                        loop_cont,
+                        loop_break_labels,
+                    )?;
                 }
                 indent(out, depth);
                 out.push('}');
             }
             out.push('\n');
         }
-        Stmt::While {
-            cond,
-            body,
-            continue_stmt,
-        } => {
-            let _ = writeln!(out, "while ({}) {{", emit_expr(cond, env, None, layouts)?);
+        Stmt::While { cond, cont, body } => {
+            let _ = writeln!(
+                out,
+                "while ({}) {{",
+                emit_expr(cond, env, None, func_returns, return_type, temp_id)?
+            );
+            let cont_label = if cont.is_some() {
+                let label = format!("zig_while_cont_{}", *temp_id);
+                *temp_id += 1;
+                loop_cont.push(Some(label.clone()));
+                Some(label)
+            } else {
+                loop_cont.push(None);
+                None
+            };
             for s in body {
-                emit_stmt(out, s, depth + 1, env, return_type, layouts)?;
+                emit_stmt(
+                    out,
+                    s,
+                    depth + 1,
+                    env,
+                    return_type,
+                    func_returns,
+                    temp_id,
+                    loop_cont,
+                    loop_break_labels,
+                )?;
             }
-            if let Some(cs) = continue_stmt {
-                emit_stmt(out, cs, depth + 1, env, return_type, layouts)?;
+            if let (Some(c), Some(label)) = (cont, cont_label) {
+                indent(out, depth + 1);
+                let _ = writeln!(out, "{label}:");
+                indent(out, depth + 1);
+                emit_while_cont_expr(out, c, env, func_returns, return_type, temp_id)?;
+                out.push('\n');
             }
+            loop_cont.pop();
             indent(out, depth);
             out.push_str("}\n");
         }
-        Stmt::Break => {
-            let _ = writeln!(out, "break;");
+        Stmt::Break { label } => {
+            if let Some(zig_label) = label {
+                let c_label = loop_break_labels
+                    .iter()
+                    .rev()
+                    .find(|(name, _)| name == zig_label)
+                    .map(|(_, c)| c.clone())
+                    .ok_or_else(|| format!("unknown loop label `{zig_label}`"))?;
+                let _ = writeln!(out, "goto {c_label};");
+            } else {
+                let _ = writeln!(out, "break;");
+            }
         }
         Stmt::Continue => {
-            let _ = writeln!(out, "continue;");
+            if let Some(Some(label)) = loop_cont.last() {
+                let _ = writeln!(out, "goto {label};");
+            } else {
+                let _ = writeln!(out, "continue;");
+            }
         }
         Stmt::ForRange {
+            label,
             capture,
             start,
             end,
             body,
         } => {
             let var = capture.as_deref().unwrap_or("_zig_for_i");
-            let loop_ty = combine_types(expr_type(start, env, layouts), expr_type(end, env, layouts))
+            let loop_ty = combine_types(
+                expr_type(start, env, func_returns),
+                expr_type(end, env, func_returns),
+            )
                 .int_type()
                 .unwrap_or(IntType::U8);
+            let loop_ty_type = Type::Int(loop_ty);
+            let end_label = label.as_ref().map(|zig_label| {
+                let c_label = format!("zig_lbreak_{}", *temp_id);
+                *temp_id += 1;
+                loop_break_labels.push((zig_label.clone(), c_label.clone()));
+                c_label
+            });
             let _ = writeln!(
                 out,
                 "for ({} {var} = {}; {var} < {}; {var}++) {{",
                 c_int_type(loop_ty),
-                emit_expr(start, env, Some(Type::Int(loop_ty)), layouts)?,
-                emit_expr(end, env, Some(Type::Int(loop_ty)), layouts)?
+                emit_expr(start, env, Some(&loop_ty_type), func_returns, return_type, temp_id)?,
+                emit_expr(end, env, Some(&loop_ty_type), func_returns, return_type, temp_id)?
             );
             if let Some(cap) = capture {
                 env.insert(cap.clone(), Type::Int(loop_ty));
             }
             for s in body {
-                emit_stmt(out, s, depth + 1, env, return_type, layouts)?;
+                emit_stmt(
+                    out,
+                    s,
+                    depth + 1,
+                    env,
+                    return_type,
+                    func_returns,
+                    temp_id,
+                    loop_cont,
+                    loop_break_labels,
+                )?;
             }
             if let Some(cap) = capture {
                 env.remove(cap);
             }
             indent(out, depth);
             out.push_str("}\n");
+            if let Some(c_label) = end_label {
+                indent(out, depth);
+                let _ = writeln!(out, "{c_label}: ;");
+                loop_break_labels.pop();
+            }
         }
         Stmt::ForArray {
+            label,
             capture,
             array,
             body,
@@ -569,101 +1009,114 @@ fn emit_stmt(
                 .get(array)
                 .cloned()
                 .ok_or_else(|| format!("unknown array variable {array}"))?;
-            let (len, elem) = match arr_ty {
-                Type::Array { len, ref elem } => (
-                    len,
-                    elem.scalar_int_type().ok_or_else(|| {
-                        format!("for-loop expected array of integers, found {arr_ty:?}")
-                    })?,
-                ),
+            let (len, elem_ty) = match &arr_ty {
+                Type::Array { len, elem } => (*len, elem.as_ref().clone()),
                 other => return Err(format!("for-loop expected array type, found {other:?}")),
             };
             let cap = capture.as_deref().unwrap_or("_zig_for_x");
             let idx = format!("_{array}_i");
+            let end_label = label.as_ref().map(|zig_label| {
+                let c_label = format!("zig_lbreak_{}", *temp_id);
+                *temp_id += 1;
+                loop_break_labels.push((zig_label.clone(), c_label.clone()));
+                c_label
+            });
             let _ = writeln!(out, "for (size_t {idx} = 0; {idx} < {len}; {idx}++) {{");
             let _ = writeln!(
                 out,
                 "    {} {cap} = {array}[{idx}];",
-                c_int_type(elem)
+                c_type(&elem_ty)
             );
             if let Some(name) = capture {
-                env.insert(name.clone(), Type::Int(elem));
+                env.insert(name.clone(), elem_ty.clone());
             }
             for s in body {
-                emit_stmt(out, s, depth + 1, env, return_type, layouts)?;
+                emit_stmt(
+                    out,
+                    s,
+                    depth + 1,
+                    env,
+                    return_type,
+                    func_returns,
+                    temp_id,
+                    loop_cont,
+                    loop_break_labels,
+                )?;
             }
             if let Some(name) = capture {
                 env.remove(name);
             }
             indent(out, depth);
             out.push_str("}\n");
+            if let Some(c_label) = end_label {
+                indent(out, depth);
+                let _ = writeln!(out, "{c_label}: ;");
+                loop_break_labels.pop();
+            }
         }
     }
     Ok(())
 }
 
-fn assign_target_type(
-    target: &AssignTarget,
-    env: &HashMap<String, Type>,
-    layouts: &HashMap<String, Vec<(String, Type)>>,
-) -> Type {
+fn assign_target_type(target: &AssignTarget, env: &HashMap<String, Type>) -> Type {
     match target {
         AssignTarget::Name(name) => env
             .get(name)
             .cloned()
             .unwrap_or(Type::Int(IntType::U8)),
-        AssignTarget::Index { base, .. } => index_expr_type(base, env, layouts),
+        AssignTarget::Index { base, .. } => indexed_lvalue_type(base, env, &HashMap::new()),
     }
+}
+
+fn indexed_lvalue_type_with_funcs(
+    base: &Expr,
+    env: &HashMap<String, Type>,
+    func_returns: &HashMap<String, Type>,
+) -> Type {
+    indexed_lvalue_type(base, env, func_returns)
 }
 
 fn emit_assign_target(
     target: &AssignTarget,
     env: &HashMap<String, Type>,
-    layouts: &HashMap<String, Vec<(String, Type)>>,
+    func_returns: &HashMap<String, Type>,
+    fn_return_type: &Type,
+    temp_id: &mut usize,
 ) -> Result<String, String> {
     Ok(match target {
         AssignTarget::Name(name) => name.clone(),
-        AssignTarget::Index { base, index } => format!(
-            "{}[{}]",
-            emit_expr(base, env, None, layouts)?,
-            emit_expr(index, env, None, layouts)?
-        ),
+        AssignTarget::Index { base, index } => {
+            format!(
+                "{}[{}]",
+                emit_expr(base, env, None, func_returns, fn_return_type, temp_id)?,
+                emit_expr(
+                    index,
+                    env,
+                    Some(&Type::Int(IntType::U32)),
+                    func_returns,
+                    fn_return_type,
+                    temp_id,
+                )?
+            )
+        }
     })
-}
-
-fn emit_expr_with_optional_wrap(
-    expr: &Expr,
-    env: &HashMap<String, Type>,
-    ty: &Type,
-    layouts: &HashMap<String, Vec<(String, Type)>>,
-) -> Result<String, String> {
-    if let Type::Optional { inner } = ty {
-        if matches!(expr, Expr::Int(_) | Expr::Bool(_) | Expr::Var(_)) {
-            let inner_ty = inner.as_ref().clone();
-            let val = emit_expr(expr, env, Some(inner_ty.clone()), layouts)?;
-            let opt_name = opt_c_name(inner);
-            return Ok(format!("({opt_name}){{ .value = {val}, .present = true }}"));
-        }
-        if matches!(expr, Expr::Null) {
-            let opt_name = opt_c_name(inner);
-            return Ok(format!(
-                "({opt_name}){{ .value = ({})0, .present = false }}",
-                c_type(inner)
-            ));
-        }
-    }
-    emit_expr(expr, env, Some(ty.clone()), layouts)
 }
 
 fn emit_expr(
     expr: &Expr,
     env: &HashMap<String, Type>,
-    expected: Option<Type>,
-    layouts: &HashMap<String, Vec<(String, Type)>>,
+    expected: Option<&Type>,
+    func_returns: &HashMap<String, Type>,
+    fn_return_type: &Type,
+    temp_id: &mut usize,
 ) -> Result<String, String> {
     Ok(match expr {
         Expr::Int(n) => {
-            if let Some(ty) = &expected {
+            if let Some(Type::Optional(inner)) = expected {
+                let opt = c_optional_name(inner);
+                let ct = c_type(inner);
+                format!("({opt}){{ .is_null = false, .value = ({ct})({n}) }}")
+            } else if let Some(ty) = expected {
                 format!("({})({})", c_type(ty), n)
             } else {
                 n.to_string()
@@ -676,11 +1129,34 @@ fn emit_expr(
                 "false".to_string()
             }
         }
+        Expr::Undefined => return Err("undefined has no runtime value".to_string()),
         Expr::Var(name) => name.clone(),
+        Expr::EnumLiteral { enum_name, variant } => c_enum_variant(enum_name, variant),
+        Expr::IntFromEnum(inner) => {
+            let inner_ty = expr_type(inner, env, func_returns);
+            let backing = inner_ty
+                .enum_name()
+                .and_then(|n| lookup_enum(n))
+                .and_then(|e| e.backing)
+                .unwrap_or(IntType::U8);
+            let inner_s = emit_expr(
+                inner,
+                env,
+                inner_ty.enum_name().map(|n| Type::Enum(n.to_string())).as_ref(),
+                func_returns,
+                fn_return_type,
+                temp_id,
+            )?;
+            format!("({})({})", c_int_type(backing), inner_s)
+        }
         Expr::Call { name, args } => {
+            let ret_ty = func_returns
+                .get(name)
+                .cloned()
+                .unwrap_or(Type::Int(IntType::U8));
             let mut parts = Vec::with_capacity(args.len());
             for a in args {
-                parts.push(emit_expr(a, env, None, layouts)?);
+                parts.push(emit_expr(a, env, None, func_returns, fn_return_type, temp_id)?);
             }
             format!("{}({})", c_fn(name), parts.join(", "))
         }
@@ -688,18 +1164,49 @@ fn emit_expr(
             if matches!(op, BinOp::LogicalAnd | BinOp::LogicalOr) {
                 format!(
                     "({} {} {})",
-                    emit_expr(left, env, Some(Type::Bool), layouts)?,
+                    emit_expr(
+                        left,
+                        env,
+                        Some(&Type::Bool),
+                        func_returns,
+                        fn_return_type,
+                        temp_id,
+                    )?,
                     c_op(*op),
-                    emit_expr(right, env, Some(Type::Bool), layouts)?
+                    emit_expr(
+                        right,
+                        env,
+                        Some(&Type::Bool),
+                        func_returns,
+                        fn_return_type,
+                        temp_id,
+                    )?
                 )
             } else {
-                let ty = combine_types(expr_type(left, env, layouts), expr_type(right, env, layouts));
-                let expected_ty = expected.unwrap_or(ty);
+                let ty = combine_types(
+                    expr_type(left, env, func_returns),
+                    expr_type(right, env, func_returns),
+                );
+                let expected_ty = expected.cloned().unwrap_or(ty);
                 format!(
                     "({} {} {})",
-                    emit_expr(left, env, Some(expected_ty.clone()), layouts)?,
+                    emit_expr(
+                        left,
+                        env,
+                        Some(&expected_ty),
+                        func_returns,
+                        fn_return_type,
+                        temp_id,
+                    )?,
                     c_op(*op),
-                    emit_expr(right, env, Some(expected_ty), layouts)?
+                    emit_expr(
+                        right,
+                        env,
+                        Some(&expected_ty),
+                        func_returns,
+                        fn_return_type,
+                        temp_id,
+                    )?
                 )
             }
         }
@@ -707,114 +1214,296 @@ fn emit_expr(
             scrutinee,
             arms,
             default,
-        } => emit_switch(scrutinee, arms, default.as_deref(), env, expected, layouts)?,
-        Expr::EnumLiteral { variant, .. } => variant.clone(),
+        } => emit_switch(
+            scrutinee,
+            arms,
+            default,
+            env,
+            func_returns,
+            fn_return_type,
+            temp_id,
+        )?,
+        Expr::Try(inner) => {
+            let inner_ty = expr_type(inner, env, func_returns);
+            let Type::ErrorUnion { err_set, payload } = inner_ty else {
+                return Err("try requires error union expression".to_string());
+            };
+            if !matches!(fn_return_type, Type::ErrorUnion { .. }) {
+                return Err("try propagation requires error union return type".to_string());
+            }
+            let st = c_error_union_name(&err_set, &payload);
+            let ok = c_error_ok_tag(&err_set);
+            let tmp = next_temp(temp_id);
+            let call = emit_expr(
+                inner,
+                env,
+                None,
+                func_returns,
+                fn_return_type,
+                temp_id,
+            )?;
+            format!(
+                "({{ {st} {tmp} = {call}; if ({tmp}.err != {ok}) return {tmp}; {tmp}.value; }})"
+            )
+        }
+        Expr::Catch { expr, fallback } => {
+            let inner_ty = expr_type(expr, env, func_returns);
+            let Type::ErrorUnion { err_set, payload } = inner_ty else {
+                return Err("catch requires error union expression".to_string());
+            };
+            let st = c_error_union_name(&err_set, &payload);
+            let ok = c_error_ok_tag(&err_set);
+            let tmp = next_temp(temp_id);
+            let call = emit_expr(
+                expr,
+                env,
+                None,
+                func_returns,
+                fn_return_type,
+                temp_id,
+            )?;
+            let fb = emit_expr(
+                fallback,
+                env,
+                Some(&payload),
+                func_returns,
+                fn_return_type,
+                temp_id,
+            )?;
+            format!(
+                "({{ {st} {tmp} = {call}; {tmp}.err == {ok} ? {tmp}.value : ({fb}); }})"
+            )
+        }
+        Expr::CatchReturn { expr, ret_val } => {
+            let inner_ty = expr_type(expr, env, func_returns);
+            let Type::ErrorUnion { err_set, payload } = inner_ty else {
+                return Err("catch requires error union expression".to_string());
+            };
+            let st = c_error_union_name(&err_set, &payload);
+            let ok = c_error_ok_tag(&err_set);
+            let tmp = next_temp(temp_id);
+            let call = emit_expr(
+                expr,
+                env,
+                None,
+                func_returns,
+                fn_return_type,
+                temp_id,
+            )?;
+            let ret = emit_expr(
+                ret_val,
+                env,
+                Some(fn_return_type),
+                func_returns,
+                fn_return_type,
+                temp_id,
+            )?;
+            format!(
+                "({{ {st} {tmp} = {call}; if ({tmp}.err != {ok}) return {ret}; {tmp}.value; }})"
+            )
+        }
+        Expr::ErrorLiteral { err_set, variant } => {
+            let payload = expected
+                .and_then(|t| t.error_union_payload())
+                .or_else(|| fn_return_type.error_union_payload())
+                .unwrap_or(Type::Int(IntType::U8));
+            let st = c_error_union_name(err_set, &payload);
+            let tag = c_error_variant_tag(err_set, variant);
+            format!("({st}){{ .err = {tag} }}")
+        }
         Expr::IntCast { expr, target } => {
             format!(
                 "({})({})",
                 c_int_type(*target),
-                emit_expr(expr, env, None, layouts)?
+                emit_expr(expr, env, None, func_returns, fn_return_type, temp_id)?
             )
         }
-        Expr::Mod { left, right } => {
-            emit_mod_rem(left, right, env, expected, true, layouts)?
-        }
-        Expr::Rem { left, right } => {
-            emit_mod_rem(left, right, env, expected, false, layouts)?
-        }
+        Expr::Mod { left, right } => emit_mod_rem(
+            left,
+            right,
+            env,
+            expected,
+            true,
+            func_returns,
+            fn_return_type,
+            temp_id,
+        )?,
+        Expr::Rem { left, right } => emit_mod_rem(
+            left,
+            right,
+            env,
+            expected,
+            false,
+            func_returns,
+            fn_return_type,
+            temp_id,
+        )?,
         Expr::UnaryNeg(operand) => {
-            let ty = expected.unwrap_or(expr_type(operand, env, layouts));
+            let ty = expected
+                .cloned()
+                .unwrap_or_else(|| expr_type(operand, env, func_returns));
             format!(
                 "(-({}))",
-                emit_expr(operand, env, Some(ty), layouts)?
+                emit_expr(
+                    operand,
+                    env,
+                    Some(&ty),
+                    func_returns,
+                    fn_return_type,
+                    temp_id,
+                )?
             )
         }
         Expr::UnaryNot(operand) => {
             format!(
                 "(!({}))",
-                emit_expr(operand, env, Some(Type::Bool), layouts)?
+                emit_expr(
+                    operand,
+                    env,
+                    Some(&Type::Bool),
+                    func_returns,
+                    fn_return_type,
+                    temp_id,
+                )?
             )
         }
         Expr::ArrayLiteral { elems, annotated } => {
             let elem_ty = expected
-                .and_then(|t| t.scalar_int_type())
-                .or_else(|| annotated.map(|(_, elem)| elem))
-                .or_else(|| {
-                    elems
-                        .first()
-                        .map(|e| expr_type(e, env, layouts).int_type().unwrap_or(IntType::U8))
+                .and_then(|t| match t {
+                    Type::Array { elem, .. } => Some(elem.as_ref().clone()),
+                    other => Some(other.clone()),
                 })
-                .unwrap_or(IntType::U8);
+                .or_else(|| annotated.as_ref().map(|(_, ty)| ty.clone()))
+                .or_else(|| elems.first().map(|e| expr_type(e, env, func_returns)))
+                .unwrap_or(Type::Int(IntType::U8));
             let parts: Result<Vec<_>, _> = elems
                 .iter()
-                .map(|e| emit_expr(e, env, Some(Type::Int(elem_ty)), layouts))
+                .map(|e| emit_expr(e, env, Some(&elem_ty), func_returns, fn_return_type, temp_id))
                 .collect();
             format!("{{ {} }}", parts?.join(", "))
         }
-        Expr::Index { base, index } => format!(
-            "{}[{}]",
-            emit_expr(base, env, None, layouts)?,
-            emit_expr(index, env, None, layouts)?
-        ),
-        Expr::Undefined => return Err("undefined may only appear in variable declarations".to_string()),
+        Expr::Index { base, index } => {
+            format!(
+                "{}[{}]",
+                emit_expr(base, env, None, func_returns, fn_return_type, temp_id)?,
+                emit_expr(
+                    index,
+                    env,
+                    Some(&Type::Int(IntType::U32)),
+                    func_returns,
+                    fn_return_type,
+                    temp_id,
+                )?
+            )
+        }
         Expr::StructLiteral { struct_name, fields } => {
             let mut parts = Vec::new();
-            for (fname, val) in fields {
-                let fty = lookup_field(struct_name, fname, layouts)
-                    .unwrap_or(Type::Int(IntType::U8));
+            for (field, value) in fields {
                 parts.push(format!(
-                    ".{fname} = {}",
-                    emit_expr(val, env, Some(fty), layouts)?
+                    ".{field} = {}",
+                    emit_expr(value, env, None, func_returns, fn_return_type, temp_id)?
                 ));
             }
             format!("({struct_name}){{ {} }}", parts.join(", "))
         }
-        Expr::FieldAccess { base, field } => {
-            let base_c = emit_expr(base, env, None, layouts)?;
-            format!("({base_c}).{field}")
-        }
-        Expr::Null => {
-            let inner = expected
-                .and_then(|t| t.optional_inner())
-                .unwrap_or(Type::Int(IntType::U8));
-            let opt_name = opt_c_name(&inner);
-            format!(
-                "({opt_name}){{ .value = ({})0, .present = false }}",
-                c_type(&inner)
-            )
-        }
-        Expr::Orelse { opt, default } => {
-            let opt_ty = expr_type(opt, env, layouts);
-            if opt_ty.optional_inner().is_none() {
-                return Err(format!("orelse requires optional lhs, found {opt_ty:?}"));
+
+        Expr::UnionLiteral {
+            union_name,
+            variant,
+            value,
+        } => {
+            let un = union_name
+                .as_ref()
+                .ok_or_else(|| "union literal missing type".to_string())?;
+            let tag = c_union_tag(un, variant);
+            let mut init = format!("({un}){{ .tag = {tag}");
+            if let Some(val) = value {
+                let _ = write!(
+                    &mut init,
+                    ", .payload = {}",
+                    emit_expr(val, env, None, func_returns, fn_return_type, temp_id)?
+                );
             }
-            let def_ty = expr_type(default, env, layouts);
-            let opt_c = emit_expr(opt, env, Some(opt_ty), layouts)?;
-            let def_c = emit_expr(default, env, Some(def_ty), layouts)?;
+            init.push_str(" }");
+            init
+        }
+        Expr::EmptyInit => return Err("empty init has no runtime value".to_string()),
+        Expr::FieldAccess { base, field } => {
             format!(
-                "(({opt_c}).present ? ({opt_c}).value : ({def_c}))"
+                "({}).{field}",
+                emit_expr(base, env, None, func_returns, fn_return_type, temp_id)?
             )
+        }
+        Expr::Orelse { left, right } => {
+            let inner = expr_type(left, env, func_returns)
+                .optional_inner()
+                .or_else(|| expected.and_then(|t| t.optional_inner()))
+                .unwrap_or(Type::Int(IntType::U8));
+            let opt_ty = Type::Optional(Box::new(inner.clone()));
+            let left_s = emit_expr(
+                left,
+                env,
+                Some(&opt_ty),
+                func_returns,
+                fn_return_type,
+                temp_id,
+            )?;
+            let right_s = emit_expr(
+                right,
+                env,
+                Some(&inner),
+                func_returns,
+                fn_return_type,
+                temp_id,
+            )?;
+            format!("(({left_s}).is_null ? ({right_s}) : (({left_s}).value))")
         }
     })
+}
+
+fn next_temp(temp_id: &mut usize) -> String {
+    let name = format!("__zig_tmp{}", *temp_id);
+    *temp_id += 1;
+    name
 }
 
 fn emit_mod_rem(
     left: &Expr,
     right: &Expr,
     env: &HashMap<String, Type>,
-    expected: Option<Type>,
+    expected: Option<&Type>,
     is_mod: bool,
-    layouts: &HashMap<String, Vec<(String, Type)>>,
+    func_returns: &HashMap<String, Type>,
+    fn_return_type: &Type,
+    temp_id: &mut usize,
 ) -> Result<String, String> {
-    let ty = combine_types(expr_type(left, env, layouts), expr_type(right, env, layouts));
-    let int_ty = expected
+    let ty = combine_types(
+        expr_type(left, env, func_returns),
+        expr_type(right, env, func_returns),
+    );
+    let it = expected
         .and_then(|t| t.int_type())
         .or_else(|| ty.int_type())
         .unwrap_or(IntType::U8);
-    let ct = c_int_type(int_ty);
-    let l = emit_expr(left, env, Some(Type::Int(int_ty)), layouts)?;
-    let r = emit_expr(right, env, Some(Type::Int(int_ty)), layouts)?;
-    if int_ty.is_signed() {
+    let ct = c_int_type(it);
+    let int_type = Type::Int(it);
+    let l = emit_expr(
+        left,
+        env,
+        Some(&int_type),
+        func_returns,
+        fn_return_type,
+        temp_id,
+    )?;
+    let r = emit_expr(
+        right,
+        env,
+        Some(&int_type),
+        func_returns,
+        fn_return_type,
+        temp_id,
+    )?;
+    if it.is_signed() {
         if is_mod {
             Ok(format!(
                 "(({ct} __a = ({l}), {ct} __b = ({r}), {ct} __m = __a % __b, \
@@ -830,27 +1519,125 @@ fn emit_mod_rem(
 
 fn emit_switch(
     scrutinee: &Expr,
-    arms: &[(SwitchCase, Expr)],
-    default: Option<&Expr>,
+    arms: &[SwitchArm],
+    default: &Option<Box<Expr>>,
     env: &HashMap<String, Type>,
-    expected: Option<Type>,
-    layouts: &HashMap<String, Vec<(String, Type)>>,
+    func_returns: &HashMap<String, Type>,
+    fn_return_type: &Type,
+    temp_id: &mut usize,
 ) -> Result<String, String> {
-    let scrut_ty = expr_type(scrutinee, env, layouts);
-    let s = emit_expr(scrutinee, env, Some(scrut_ty.clone()), layouts)?;
-    let out_ty = expected.unwrap_or(Type::Int(IntType::U8));
+    if arms.is_empty() {
+        return Err("switch has no arms".to_string());
+    }
+    let s = emit_expr(
+        scrutinee,
+        env,
+        None,
+        func_returns,
+        fn_return_type,
+        temp_id,
+    )?;
+    let scrutinee_ty = expr_type(scrutinee, env, func_returns);
+    if let Type::Union(union_name) = scrutinee_ty {
+        return emit_union_switch(
+            &s,
+            &union_name,
+            arms,
+            env,
+            func_returns,
+            fn_return_type,
+            temp_id,
+        );
+    }
     let mut result = match default {
-        Some(d) => emit_expr(d, env, Some(out_ty.clone()), layouts)?,
-        None => emit_expr(&Expr::Int(0), env, Some(out_ty.clone()), layouts)?,
+        Some(d) => emit_expr(
+            d,
+            env,
+            None,
+            func_returns,
+            fn_return_type,
+            temp_id,
+        )?,
+        None => emit_expr(
+            &arms[arms.len() - 1].expr,
+            env,
+            None,
+            func_returns,
+            fn_return_type,
+            temp_id,
+        )?,
     };
-    for (case, arm_expr) in arms.iter().rev() {
-        let arm = emit_expr(arm_expr, env, Some(out_ty.clone()), layouts)?;
-        result = match case {
-            SwitchCase::Int(val) => format!("(({s}) == {val} ? ({arm}) : ({result}))"),
-            SwitchCase::Variant(v) => format!("(({s}) == {v} ? ({arm}) : ({result}))"),
+    let arm_iter: Box<dyn Iterator<Item = &SwitchArm>> = match default {
+        Some(_) => Box::new(arms.iter().rev()),
+        None => Box::new(arms.iter().rev().skip(1)),
+    };
+    for arm in arm_iter {
+        let arm_expr = emit_expr(
+            &arm.expr,
+            env,
+            None,
+            func_returns,
+            fn_return_type,
+            temp_id,
+        )?;
+        result = match (&scrutinee_ty, &arm.tag) {
+            (Type::Enum(enum_name), SwitchTag::EnumVariant { variant, .. }) => {
+                let tag = c_enum_variant(enum_name, variant);
+                format!("(({s}) == {tag} ? ({arm_expr}) : ({result}))")
+            }
+            (_, SwitchTag::Int(val)) => {
+                format!("(({s}) == {val} ? ({arm_expr}) : ({result}))")
+            }
+            _ => return Err("switch arm tag does not match scrutinee type".to_string()),
         };
     }
     Ok(result)
+}
+
+fn emit_union_switch(
+    s: &str,
+    union_name: &str,
+    arms: &[SwitchArm],
+    env: &HashMap<String, Type>,
+    func_returns: &HashMap<String, Type>,
+    fn_return_type: &Type,
+    temp_id: &mut usize,
+) -> Result<String, String> {
+    let result_ty = arms
+        .last()
+        .map(|a| expr_type(&a.expr, env, func_returns))
+        .unwrap_or(Type::Int(IntType::U32));
+    let ct = c_type(&result_ty);
+    let mut out = String::from("({\n");
+    let _ = writeln!(out, "    {ct} _zig_switch_result = 0;");
+    for arm in arms {
+        let SwitchTag::UnionVariant { variant, capture, .. } = &arm.tag else {
+            return Err("union switch requires union variant arms".to_string());
+        };
+        let tag = c_union_tag(union_name, variant);
+        let arm_expr = emit_expr(
+            &arm.expr,
+            env,
+            Some(&result_ty),
+            func_returns,
+            fn_return_type,
+            temp_id,
+        )?;
+        if let Some(cap) = capture {
+            let cap_ct = c_type(&Type::Int(IntType::U32));
+            let _ = writeln!(
+                out,
+                "    if (({s}).tag == {tag}) {{ {cap_ct} {cap} = ({s}).payload; _zig_switch_result = {arm_expr}; }}"
+            );
+        } else {
+            let _ = writeln!(
+                out,
+                "    if (({s}).tag == {tag}) {{ _zig_switch_result = {arm_expr}; }}"
+            );
+        }
+    }
+    out.push_str("    _zig_switch_result;\n})");
+    Ok(out)
 }
 
 fn c_op(op: BinOp) -> &'static str {

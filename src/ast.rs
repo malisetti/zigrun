@@ -6,10 +6,16 @@
 pub enum Type {
     Bool,
     Int(IntType),
-    Optional { inner: Box<Type> },
     Array { len: usize, elem: Box<Type> },
     Enum(String),
     Struct(String),
+    Union(String),
+    ErrorUnion {
+        err_set: String,
+        payload: Box<Type>,
+    },
+    Optional(Box<Type>),
+    Void,
 }
 
 impl Type {
@@ -24,16 +30,26 @@ impl Type {
         match self {
             Type::Bool => None,
             Type::Int(t) => Some(*t),
-            Type::Optional { inner } => inner.int_type(),
             Type::Array { elem, .. } => elem.int_type(),
             Type::Enum(_) => None,
             Type::Struct(_) => None,
+            Type::Union(_) => None,
+            Type::ErrorUnion { payload, .. } => payload.int_type(),
+            Type::Optional(inner) => inner.int_type(),
+            Type::Void => None,
         }
     }
 
-    pub fn optional_inner(&self) -> Option<Type> {
+    pub fn error_union_err_set(&self) -> Option<&str> {
         match self {
-            Type::Optional { inner } => Some(inner.as_ref().clone()),
+            Type::ErrorUnion { err_set, .. } => Some(err_set),
+            _ => None,
+        }
+    }
+
+    pub fn error_union_payload(&self) -> Option<Type> {
+        match self {
+            Type::ErrorUnion { payload, .. } => Some((**payload).clone()),
             _ => None,
         }
     }
@@ -45,18 +61,27 @@ impl Type {
         }
     }
 
-    pub fn array_elem(&self) -> Option<Type> {
+    pub fn union_name(&self) -> Option<&str> {
         match self {
-            Type::Array { elem, .. } => Some(elem.as_ref().clone()),
+            Type::Union(name) => Some(name),
             _ => None,
         }
     }
 
-    pub fn scalar_int_type(&self) -> Option<IntType> {
+    pub fn index_result_type(&self) -> Option<Type> {
         match self {
-            Type::Int(t) => Some(*t),
-            Type::Optional { inner } => inner.scalar_int_type(),
-            Type::Array { elem, .. } => elem.scalar_int_type(),
+            Type::Array { elem, .. } => Some((**elem).clone()),
+            _ => None,
+        }
+    }
+
+    pub fn array_leaf_int(&self) -> Option<IntType> {
+        match self {
+            Type::Array { elem, .. } => match elem.as_ref() {
+                Type::Int(t) => Some(*t),
+                Type::Array { .. } => elem.array_leaf_int(),
+                _ => None,
+            },
             _ => None,
         }
     }
@@ -68,6 +93,19 @@ impl Type {
         }
     }
 
+    pub fn enum_name(&self) -> Option<&str> {
+        match self {
+            Type::Enum(name) => Some(name),
+            _ => None,
+        }
+    }
+
+    pub fn optional_inner(&self) -> Option<Type> {
+        match self {
+            Type::Optional(inner) => Some((**inner).clone()),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -113,28 +151,50 @@ impl IntType {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EnumDecl {
+pub struct EnumVariant {
+    pub name: String,
+    /// Explicit `variant = N`; omitted variants get sequential values at codegen.
+    pub value: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnumDef {
+    pub name: String,
+    pub backing: Option<IntType>,
+    pub variants: Vec<EnumVariant>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ErrorSetDef {
     pub name: String,
     pub variants: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StructDecl {
+pub struct StructDef {
     pub name: String,
     pub fields: Vec<(String, Type)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Program {
-    pub enums: Vec<EnumDecl>,
-    pub structs: Vec<StructDecl>,
-    pub functions: Vec<Function>,
+pub struct UnionVariant {
+    pub name: String,
+    pub payload: Option<Type>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SwitchCase {
-    Int(u64),
-    Variant(String),
+pub struct UnionDef {
+    pub name: String,
+    pub variants: Vec<UnionVariant>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Program {
+    pub enums: Vec<EnumDef>,
+    pub error_sets: Vec<ErrorSetDef>,
+    pub structs: Vec<StructDef>,
+    pub unions: Vec<UnionDef>,
+    pub functions: Vec<Function>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -162,19 +222,23 @@ pub enum Stmt {
     },
     While {
         cond: Expr,
+        /// `while (cond) : (cont) { ... }` — runs after each iteration and on `continue`.
+        cont: Option<Expr>,
         body: Vec<Stmt>,
-        /// Zig `while (cond) : (continue_expr)` — run after each iteration.
-        continue_stmt: Option<Box<Stmt>>,
     },
-    Break,
+    Break {
+        label: Option<String>,
+    },
     Continue,
     ForRange {
+        label: Option<String>,
         capture: Option<String>,
         start: Expr,
         end: Expr,
         body: Vec<Stmt>,
     },
     ForArray {
+        label: Option<String>,
         capture: Option<String>,
         array: String,
         body: Vec<Stmt>,
@@ -184,13 +248,37 @@ pub enum Stmt {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AssignTarget {
     Name(String),
-    Index { base: Box<Expr>, index: Expr },
+    Index {
+        base: Box<Expr>,
+        index: Box<Expr>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SwitchTag {
+    Int(u64),
+    EnumVariant {
+        enum_name: String,
+        variant: String,
+    },
+    UnionVariant {
+        union_name: String,
+        variant: String,
+        capture: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitchArm {
+    pub tag: SwitchTag,
+    pub expr: Expr,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Expr {
     Int(i64),
     Bool(bool),
+    Undefined,
     Var(String),
     Call { name: String, args: Vec<Expr> },
     BinOp {
@@ -200,7 +288,7 @@ pub enum Expr {
     },
     Switch {
         scrutinee: Box<Expr>,
-        arms: Vec<(SwitchCase, Expr)>,
+        arms: Vec<SwitchArm>,
         default: Option<Box<Expr>>,
     },
     EnumLiteral {
@@ -223,14 +311,13 @@ pub enum Expr {
     UnaryNot(Box<Expr>),
     ArrayLiteral {
         elems: Vec<Expr>,
-        /// Present for `[N]type{ ... }`; absent for `.{ ... }`.
-        annotated: Option<(usize, IntType)>,
+        /// Present for `[N]type{ ... }` or `[_]type{ ... }`; absent for `.{ ... }`.
+        annotated: Option<(Option<usize>, Type)>,
     },
     Index {
         base: Box<Expr>,
         index: Box<Expr>,
     },
-    Undefined,
     StructLiteral {
         struct_name: String,
         fields: Vec<(String, Expr)>,
@@ -239,10 +326,29 @@ pub enum Expr {
         base: Box<Expr>,
         field: String,
     },
-    Null,
+    UnionLiteral {
+        union_name: Option<String>,
+        variant: String,
+        value: Option<Box<Expr>>,
+    },
+    EmptyInit,
+    Try(Box<Expr>),
+    Catch {
+        expr: Box<Expr>,
+        fallback: Box<Expr>,
+    },
+    CatchReturn {
+        expr: Box<Expr>,
+        ret_val: Box<Expr>,
+    },
+    ErrorLiteral {
+        err_set: String,
+        variant: String,
+    },
+    IntFromEnum(Box<Expr>),
     Orelse {
-        opt: Box<Expr>,
-        default: Box<Expr>,
+        left: Box<Expr>,
+        right: Box<Expr>,
     },
 }
 
