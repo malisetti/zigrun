@@ -598,13 +598,45 @@ impl Parser {
                 };
             }
         }
-        if self.check(&TokenKind::LParen) {
-            let call_expr = self.parse_postfix_on(target_expr)?;
-            self.expect(TokenKind::Semicolon)?;
-            return Ok(Stmt::Assign {
-                target: AssignTarget::Name("_".to_string()),
-                value: call_expr,
-            });
+        if let Expr::FieldAccess { base, field } = &target_expr {
+            if self.check(&TokenKind::LParen) {
+                let struct_name = match base.as_ref() {
+                    Expr::Var(v) => self
+                        .locals
+                        .get(v)
+                        .and_then(|t| t.struct_name().map(str::to_string)),
+                    _ => None,
+                };
+                if let Some(sn) = struct_name {
+                    if self
+                        .struct_methods
+                        .get(&sn)
+                        .map_or(false, |ms| ms.contains(field))
+                    {
+                        self.advance();
+                        let mut args = vec![*base.clone()];
+                        if !self.check(&TokenKind::RParen) {
+                            loop {
+                                args.push(self.parse_expr()?);
+                                if self.check(&TokenKind::Comma) {
+                                    self.advance();
+                                } else {
+                                    break;
+                                }
+                            }
+                        }
+                        self.expect(TokenKind::RParen)?;
+                        self.expect(TokenKind::Semicolon)?;
+                        return Ok(Stmt::Assign {
+                            target: AssignTarget::Name("_".to_string()),
+                            value: Expr::Call {
+                                name: format!("{}_{}", sn, field),
+                                args,
+                            },
+                        });
+                    }
+                }
+            }
         }
         let target = match target_expr {
             Expr::Var(name) => AssignTarget::Name(name),
@@ -972,8 +1004,69 @@ impl Parser {
     }
 
     fn parse_postfix(&mut self) -> Result<Expr, String> {
-        let expr = self.parse_primary()?;
-        let mut expr = self.parse_postfix_on(expr)?;
+        let mut expr = self.parse_primary()?;
+        loop {
+            if self.check(&TokenKind::Dot) {
+                self.advance();
+                let field = self.expect_ident()?;
+                if let Expr::Var(err_set) = &expr {
+                    if self.error_sets.contains_key(err_set) {
+                        expr = Expr::ErrorLiteral {
+                            err_set: err_set.clone(),
+                            variant: field,
+                        };
+                        continue;
+                    }
+                    if self.enums.contains_key(err_set) {
+                        expr = Expr::EnumLiteral {
+                            enum_name: err_set.clone(),
+                            variant: field,
+                        };
+                        continue;
+                    }
+                }
+                // Check for method call: expr.method(args)
+                if self.check(&TokenKind::LParen) {
+                    let struct_name = match &expr {
+                        Expr::Var(v) => self.locals.get(v).and_then(|t| t.struct_name().map(str::to_string)),
+                        _ => None,
+                    };
+                    if let Some(sn) = struct_name {
+                        if self.struct_methods.get(&sn).map_or(false, |ms| ms.contains(&field)) {
+                            self.advance(); // consume (
+                            let mut args = vec![expr];
+                            if !self.check(&TokenKind::RParen) {
+                                loop {
+                                    args.push(self.parse_expr()?);
+                                    if self.check(&TokenKind::Comma) {
+                                        self.advance();
+                                    } else {
+                                        break;
+                                    }
+                                }
+                            }
+                            self.expect(TokenKind::RParen)?;
+                            expr = Expr::Call { name: format!("{}_{}", sn, field), args };
+                            continue;
+                        }
+                    }
+                }
+                expr = Expr::FieldAccess {
+                    base: Box::new(expr),
+                    field,
+                };
+            } else if self.check(&TokenKind::LBracket) {
+                self.advance();
+                let index = self.parse_expr()?;
+                self.expect(TokenKind::RBracket)?;
+                expr = Expr::Index {
+                    base: Box::new(expr),
+                    index: Box::new(index),
+                };
+            } else {
+                break;
+            }
+        }
         if self.check(&TokenKind::Catch) {
             self.advance();
             let capture = self.parse_switch_capture()?;
@@ -1001,103 +1094,6 @@ impl Parser {
                 left: Box::new(expr),
                 right: Box::new(fallback),
             };
-        }
-        Ok(expr)
-    }
-
-    fn parse_postfix_on(&mut self, expr: Expr) -> Result<Expr, String> {
-        if let Expr::FieldAccess { base, field } = &expr {
-            let field = field.clone();
-            let receiver = base.as_ref().clone();
-            if self.check(&TokenKind::LParen) {
-                if let Some(sn) = self.infer_expr_type_local(&receiver).struct_name().map(str::to_string)
-                {
-                    if self.struct_methods.get(&sn).map_or(false, |ms| ms.contains(&field)) {
-                        self.advance();
-                        let mut args = vec![receiver];
-                        if !self.check(&TokenKind::RParen) {
-                            loop {
-                                args.push(self.parse_expr()?);
-                                if self.check(&TokenKind::Comma) {
-                                    self.advance();
-                                } else {
-                                    break;
-                                }
-                            }
-                        }
-                        self.expect(TokenKind::RParen)?;
-                        return Ok(Expr::Call {
-                            name: format!("{}_{}", sn, field),
-                            args,
-                        });
-                    }
-                }
-            }
-        }
-        self.parse_postfix_suffix(expr)
-    }
-
-    fn parse_postfix_suffix(&mut self, mut expr: Expr) -> Result<Expr, String> {
-        loop {
-            if self.check(&TokenKind::Dot) {
-                self.advance();
-                let field = self.expect_ident()?;
-                if let Expr::Var(err_set) = &expr {
-                    if self.error_sets.contains_key(err_set) {
-                        expr = Expr::ErrorLiteral {
-                            err_set: err_set.clone(),
-                            variant: field,
-                        };
-                        continue;
-                    }
-                    if self.enums.contains_key(err_set) {
-                        expr = Expr::EnumLiteral {
-                            enum_name: err_set.clone(),
-                            variant: field,
-                        };
-                        continue;
-                    }
-                }
-                if self.check(&TokenKind::LParen) {
-                    if let Some(sn) = self.infer_expr_type_local(&expr).struct_name().map(str::to_string)
-                    {
-                        if self.struct_methods.get(&sn).map_or(false, |ms| ms.contains(&field)) {
-                            self.advance();
-                            let mut args = vec![expr];
-                            if !self.check(&TokenKind::RParen) {
-                                loop {
-                                    args.push(self.parse_expr()?);
-                                    if self.check(&TokenKind::Comma) {
-                                        self.advance();
-                                    } else {
-                                        break;
-                                    }
-                                }
-                            }
-                            self.expect(TokenKind::RParen)?;
-                            expr = Expr::Call {
-                                name: format!("{}_{}", sn, field),
-                                args,
-                            };
-                            continue;
-                        }
-                    }
-                }
-                expr = Expr::FieldAccess {
-                    base: Box::new(expr),
-                    field,
-                };
-            } else if self.check(&TokenKind::LBracket) {
-                self.advance();
-                let index = self.parse_expr()?;
-                self.expect(TokenKind::RBracket)?;
-                expr = Expr::Index {
-                    base: Box::new(expr),
-                    index: Box::new(index),
-                };
-            } else {
-                break;
-            }
         }
         Ok(expr)
     }
