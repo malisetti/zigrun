@@ -84,14 +84,13 @@ impl Parser {
                     TopLevelDecl::Union(u) => union_defs.push(u),
                 }
             } else {
-                functions.push(self.parse_function()?);
+                let f = self.parse_function()?;
+                self.functions.insert(f.name.clone(), f.return_type.clone());
+                functions.push(f);
             }
         }
         if functions.is_empty() {
             return Err("empty program: no functions".to_string());
-        }
-        for f in &functions {
-            self.functions.insert(f.name.clone(), f.return_type.clone());
         }
         Ok(Program {
             enums: enum_defs,
@@ -708,21 +707,87 @@ impl Parser {
         self.expect(TokenKind::LParen)?;
         let cond = self.parse_expr()?;
         self.expect(TokenKind::RParen)?;
-        let then_branch = self.parse_if_branch()?;
-        let else_branch = if self.check(&TokenKind::Else) {
+
+        let ok_capture = if self.check(&TokenKind::Pipe) {
             self.advance();
-            if self.check(&TokenKind::If) {
+            let name = self.expect_ident()?;
+            self.expect(TokenKind::Pipe)?;
+            Some(name)
+        } else {
+            None
+        };
+
+        let err_union = match self.infer_expr_type_local(&cond) {
+            Type::ErrorUnion { err_set, payload } => Some((err_set, (*payload).clone())),
+            _ => None,
+        };
+
+        let saved_ok = if let (Some(cap), Some((_, payload))) = (&ok_capture, &err_union) {
+            Some((cap.clone(), self.locals.insert(cap.clone(), payload.clone())))
+        } else {
+            None
+        };
+
+        let then_branch = self.parse_if_branch()?;
+
+        if let Some((cap, prev)) = saved_ok {
+            match prev {
+                Some(t) => {
+                    self.locals.insert(cap, t);
+                }
+                None => {
+                    self.locals.remove(&cap);
+                }
+            }
+        }
+
+        let (err_capture, else_branch) = if self.check(&TokenKind::Else) {
+            self.advance();
+
+            let err_cap = if self.check(&TokenKind::Pipe) {
+                self.advance();
+                let name = self.expect_ident()?;
+                self.expect(TokenKind::Pipe)?;
+                Some(name)
+            } else {
+                None
+            };
+
+            let saved_err = if let (Some(cap), Some((err_set, _))) = (&err_cap, &err_union) {
+                let tag_ty = Type::Enum(format!("{err_set}_err"));
+                Some((cap.clone(), self.locals.insert(cap.clone(), tag_ty)))
+            } else {
+                None
+            };
+
+            let else_br = if self.check(&TokenKind::If) {
                 self.advance();
                 Some(vec![self.parse_if_stmt()?])
             } else {
                 Some(self.parse_if_branch()?)
+            };
+
+            if let Some((cap, prev)) = saved_err {
+                match prev {
+                    Some(t) => {
+                        self.locals.insert(cap, t);
+                    }
+                    None => {
+                        self.locals.remove(&cap);
+                    }
+                }
             }
+
+            (err_cap, else_br)
         } else {
-            None
+            (None, None)
         };
+
         Ok(Stmt::If {
             cond,
+            ok_capture,
             then_branch,
+            err_capture,
             else_branch,
         })
     }
@@ -1005,6 +1070,20 @@ impl Parser {
                 let builtin = self.expect_ident()?;
                 self.expect(TokenKind::LParen)?;
                 match builtin.as_str() {
+                    "as" => {
+                        let ty = self.parse_type()?;
+                        self.expect(TokenKind::Comma)?;
+                        let expr = self.parse_expr()?;
+                        self.expect(TokenKind::RParen)?;
+                        if let Type::Int(target) = ty {
+                            Ok(Expr::IntCast {
+                                expr: Box::new(expr),
+                                target,
+                            })
+                        } else {
+                            Err(format!("@as only supports integer types, got {:?}", ty))
+                        }
+                    }
                     "intCast" => {
                         let expr = self.parse_expr()?;
                         self.expect(TokenKind::RParen)?;
@@ -1299,11 +1378,7 @@ impl Parser {
                     })?;
                     self.advance();
                     let variant = self.expect_ident()?;
-                    if !self
-                        .enums
-                        .get(&enum_name)
-                        .is_some_and(|vs| vs.iter().any(|v| v == &variant))
-                    {
+                    if !self.enum_has_variant(&enum_name, &variant) {
                         return Err(format!(
                             "unknown variant {variant:?} for enum {enum_name:?}"
                         ));
@@ -1380,11 +1455,7 @@ impl Parser {
                         capture: None,
                     }
                 } else if let Some(ref enum_name) = scrutinee_enum {
-                    if !self
-                        .enums
-                        .get(enum_name)
-                        .is_some_and(|vs| vs.iter().any(|v| v == &variant))
-                    {
+                    if !self.enum_has_variant(enum_name, &variant) {
                         return Err(format!(
                             "unknown variant {variant:?} for enum {enum_name:?}"
                         ));
@@ -1395,6 +1466,53 @@ impl Parser {
                     }
                 } else {
                     return Err("dot arm requires enum or union scrutinee".to_string());
+                }
+            } else if let TokenKind::Ident(enum_or_name) = self.peek_kind() {
+                let potential_enum = enum_or_name.clone();
+                let next_pos = self.pos + 1;
+                let next_is_dot = next_pos < self.tokens.len() && self.tokens[next_pos].kind == TokenKind::Dot;
+
+                if next_is_dot {
+                    self.advance();
+                    self.advance();
+                    let variant = self.expect_ident()?;
+                    if let Some(ref enum_name) = scrutinee_enum {
+                        if enum_name == &potential_enum {
+                            if !self.enum_has_variant(enum_name, &variant) {
+                                return Err(format!(
+                                    "unknown variant {variant:?} for enum {enum_name:?}"
+                                ));
+                            }
+                            SwitchTag::EnumVariant {
+                                enum_name: enum_name.clone(),
+                                variant,
+                            }
+                        } else if enum_name.ends_with("_err") && &format!("{potential_enum}_err") == enum_name {
+                            if !self.enum_has_variant(enum_name, &variant) {
+                                return Err(format!(
+                                    "unknown variant {variant:?} for error set {potential_enum:?}"
+                                ));
+                            }
+                            SwitchTag::EnumVariant {
+                                enum_name: enum_name.clone(),
+                                variant,
+                            }
+                        } else {
+                            return Err(format!(
+                                "switch arm enum {potential_enum:?} does not match scrutinee enum {enum_name:?}"
+                            ));
+                        }
+                    } else {
+                        return Err(format!(
+                            "enum variant arm {potential_enum}.{variant} requires enum scrutinee"
+                        ));
+                    }
+                } else {
+                    let val = match self.peek_kind() {
+                        TokenKind::Int(n) => { self.advance(); n }
+                        other => return Err(format!("expected integer literal in switch arm, found {other:?}")),
+                    };
+                    SwitchTag::Int(val)
                 }
             } else {
                 let val = match self.peek_kind() {
@@ -1443,6 +1561,34 @@ impl Parser {
             }
             other => Err(format!("expected statement in switch arm, found {other:?}")),
         }
+    }
+
+    fn infer_expr_type_local(&self, expr: &Expr) -> Type {
+        infer_expr_type(
+            expr,
+            &self.enums,
+            &self.structs,
+            &self.unions,
+            &self.locals,
+            &self.functions,
+        )
+    }
+
+    fn enum_has_variant(&self, enum_name: &str, variant: &str) -> bool {
+        if self
+            .enums
+            .get(enum_name)
+            .is_some_and(|vs| vs.iter().any(|v| v == variant))
+        {
+            return true;
+        }
+        if let Some(err_set) = enum_name.strip_suffix("_err") {
+            return self
+                .error_sets
+                .get(err_set)
+                .is_some_and(|vs| vs.iter().any(|v| v == variant));
+        }
+        false
     }
 
     fn infer_enum_type(&self, expr: &Expr) -> Option<String> {

@@ -234,7 +234,9 @@ pub enum Stmt {
     Return(Expr),
     If {
         cond: Expr,
+        ok_capture: Option<String>,
         then_branch: Vec<Stmt>,
+        err_capture: Option<String>,
         else_branch: Option<Vec<Stmt>>,
     },
     While {

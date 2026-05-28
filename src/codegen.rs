@@ -234,7 +234,9 @@ fn collect_optionals_in_stmts(stmts: &[Stmt], add: &mut dyn FnMut(&Type)) {
             Stmt::Return(e) => collect_optionals_in_expr(e, add),
             Stmt::If {
                 cond,
+                ok_capture: _,
                 then_branch,
+                err_capture: _,
                 else_branch,
             } => {
                 collect_optionals_in_expr(cond, add);
@@ -374,7 +376,9 @@ fn collect_error_unions_in_stmts(stmts: &[Stmt], add: &mut dyn FnMut(&Type)) {
             Stmt::Return(e) => collect_error_unions_in_expr(e, add),
             Stmt::If {
                 cond,
+                ok_capture: _,
                 then_branch,
+                err_capture: _,
                 else_branch,
             } => {
                 collect_error_unions_in_expr(cond, add);
@@ -947,32 +951,82 @@ fn emit_stmt(
         }
         Stmt::If {
             cond,
+            ok_capture,
             then_branch,
+            err_capture,
             else_branch,
         } => {
-            let _ = writeln!(
-                out,
-                "if ({}) {{",
-                emit_expr(cond, env, None, func_returns, return_type, temp_id)?
-            );
-            for s in then_branch {
-                emit_stmt(
+            if ok_capture.is_some() || err_capture.is_some() {
+                let cond_ty = expr_type(cond, env, func_returns);
+                if let Type::ErrorUnion { err_set, payload } = cond_ty {
+                    let st = c_error_union_name(&err_set, &payload);
+                    let ok = c_error_ok_tag(&err_set);
+                    let tmp = next_temp(temp_id);
+                    let cond_code = emit_expr(cond, env, None, func_returns, return_type, temp_id)?;
+                    let _ = writeln!(out, "{} {} = {};", st, tmp, cond_code);
+                    let _ = writeln!(out, "if ({}.err == {}) {{", tmp, ok);
+
+                    let mut then_env = env.clone();
+                    if let Some(ok_var) = ok_capture {
+                        let payload_ct = c_type(&payload);
+                        let _ = writeln!(out, "    {} {} = {}.value;", payload_ct, ok_var, tmp);
+                        then_env.insert(ok_var.clone(), (*payload).clone());
+                    }
+
+                    for s in then_branch {
+                        emit_stmt(
+                            out,
+                            s,
+                            depth + 1,
+                            &mut then_env,
+                            return_type,
+                            func_returns,
+                            temp_id,
+                            loop_cont,
+                            loop_break_labels,
+                        )?;
+                    }
+
+                    indent(out, depth);
+                    out.push('}');
+
+                    if let Some(eb) = else_branch {
+                        out.push_str(" else {\n");
+
+                        let mut else_env = env.clone();
+                        if let Some(err_var) = err_capture {
+                            let tag_ty = c_error_tag_enum(&err_set);
+                            let _ = writeln!(out, "    {} {} = {}.err;", tag_ty, err_var, tmp);
+                            else_env.insert(err_var.clone(), Type::Enum(format!("{}_err", err_set)));
+                        }
+
+                        for s in eb {
+                            emit_stmt(
+                                out,
+                                s,
+                                depth + 1,
+                                &mut else_env,
+                                return_type,
+                                func_returns,
+                                temp_id,
+                                loop_cont,
+                                loop_break_labels,
+                            )?;
+                        }
+                        indent(out, depth);
+                        out.push('}');
+                    }
+                    out.push('\n');
+                } else {
+                    return Err("if captures require error union condition".to_string());
+                }
+            } else {
+                let _ = writeln!(
                     out,
-                    s,
-                    depth + 1,
-                    env,
-                    return_type,
-                    func_returns,
-                    temp_id,
-                    loop_cont,
-                    loop_break_labels,
-                )?;
-            }
-            indent(out, depth);
-            out.push('}');
-            if let Some(eb) = else_branch {
-                out.push_str(" else {\n");
-                for s in eb {
+                    "if ({}) {{",
+                    emit_expr(cond, env, None, func_returns, return_type, temp_id)?
+                );
+                for s in then_branch {
                     emit_stmt(
                         out,
                         s,
@@ -987,8 +1041,26 @@ fn emit_stmt(
                 }
                 indent(out, depth);
                 out.push('}');
+                if let Some(eb) = else_branch {
+                    out.push_str(" else {\n");
+                    for s in eb {
+                        emit_stmt(
+                            out,
+                            s,
+                            depth + 1,
+                            env,
+                            return_type,
+                            func_returns,
+                            temp_id,
+                            loop_cont,
+                            loop_break_labels,
+                        )?;
+                    }
+                    indent(out, depth);
+                    out.push('}');
+                }
+                out.push('\n');
             }
-            out.push('\n');
         }
         Stmt::While { cond, cont, body } => {
             let _ = writeln!(
@@ -1312,6 +1384,11 @@ fn emit_expr(
                 let opt = c_optional_name(inner);
                 let ct = c_type(inner);
                 format!("({opt}){{ .is_null = false, .value = ({ct})({n}) }}")
+            } else if let Some(Type::ErrorUnion { err_set, payload }) = expected {
+                let st = c_error_union_name(err_set, payload);
+                let ok = c_error_ok_tag(err_set);
+                let ct = c_type(payload);
+                format!("({st}){{ .err = {ok}, .value = ({ct})({n}) }}")
             } else if let Some(ty) = expected {
                 format!("({})({})", c_type(ty), n)
             } else {
