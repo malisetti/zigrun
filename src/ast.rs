@@ -416,6 +416,8 @@ pub enum Expr {
         variant: String,
     },
     IntFromEnum(Box<Expr>),
+    /// `ptr.*` — pointer dereference as an rvalue
+    Deref(Box<Expr>),
     Orelse {
         left: Box<Expr>,
         right: Box<Expr>,

@@ -40,6 +40,7 @@ durable state — stop and resume any time.
 - [x] errorset_s2 | oracle/errorset_s2.zig | ladder step for 'errorset' (real zig=60) (landed autonomously vs real zig)
 - [x] taggedunion_s1 | oracle/taggedunion_s1.zig | ladder step for 'taggedunion' (real zig=7) (landed autonomously vs real zig)
 - [x] switchrange_s1 | oracle/switchrange_s1.zig | ladder step for 'switchrange' (real zig=42) (landed autonomously vs real zig)
+- [x] switchrange_s2 | oracle/switchrange_s2.zig | ladder step for 'switchrange' (real zig=20) (landed autonomously vs real zig)
 
 ## Frontier (pending — each is real Zig that zigrun must learn to match)
 - [ ] bitwise | oracle/pending/bitwise.zig | self-discovered atomic gap (real zig=35)
@@ -63,7 +64,6 @@ durable state — stop and resume any time.
 - [ ] switchrange_s5 | oracle/pending/switchrange_s5.zig | ladder step for 'switchrange' (real zig=46)
 - [ ] switchrange_s4 | oracle/pending/switchrange_s4.zig | ladder step for 'switchrange' (real zig=60)
 - [ ] switchrange_s3 | oracle/pending/switchrange_s3.zig | ladder step for 'switchrange' (real zig=150)
-- [ ] switchrange_s2 | oracle/pending/switchrange_s2.zig | ladder step for 'switchrange' (real zig=20)
 - [ ] multidim_s5 | oracle/pending/multidim_s5.zig | ladder step for 'multidim' (real zig=72)
 - [ ] multidim_s4 | oracle/pending/multidim_s4.zig | ladder step for 'multidim' (real zig=36)
 - [ ] multidim_s3 | oracle/pending/multidim_s3.zig | ladder step for 'multidim' (real zig=100)
