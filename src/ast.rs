@@ -124,6 +124,8 @@ impl Type {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IntType {
+    U2,
+    U3,
     U4,
     U8,
     U16,
@@ -138,6 +140,8 @@ pub enum IntType {
 impl IntType {
     pub fn from_name(name: &str) -> Option<Self> {
         match name {
+            "u2" => Some(IntType::U2),
+            "u3" => Some(IntType::U3),
             "u4" => Some(IntType::U4),
             "u8" => Some(IntType::U8),
             "u16" => Some(IntType::U16),
@@ -157,6 +161,8 @@ impl IntType {
 
     pub fn bits(self) -> u32 {
         match self {
+            IntType::U2 => 2,
+            IntType::U3 => 3,
             IntType::U4 => 4,
             IntType::U8 | IntType::I8 => 8,
             IntType::U16 | IntType::I16 => 16,
@@ -167,12 +173,13 @@ impl IntType {
 
     pub fn rank(self) -> u8 {
         match self {
-            IntType::U4 => 0,
-            IntType::U8 | IntType::I8 => 1,
-            IntType::U16 | IntType::I16 => 2,
-            IntType::U32 | IntType::I32 => 3,
-            IntType::I64 => 4,
-            IntType::U64 => 5,
+            IntType::U2 | IntType::U3 => 0,
+            IntType::U4 => 1,
+            IntType::U8 | IntType::I8 => 2,
+            IntType::U16 | IntType::I16 => 3,
+            IntType::U32 | IntType::I32 => 4,
+            IntType::I64 => 5,
+            IntType::U64 => 6,
         }
     }
 }
@@ -304,6 +311,12 @@ pub enum AssignTarget {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SwitchTag {
     Int(u64),
+    /// Inclusive integer range `lo...hi` in a switch arm; optional `|v|` binds scrutinee.
+    IntRange {
+        lo: u64,
+        hi: u64,
+        capture: Option<String>,
+    },
     EnumVariant {
         enum_name: String,
         variant: String,
@@ -352,7 +365,7 @@ pub enum Expr {
     },
     BitCast {
         expr: Box<Expr>,
-        target: IntType,
+        target: Type,
     },
     Mod {
         left: Box<Expr>,

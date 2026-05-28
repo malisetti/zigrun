@@ -608,7 +608,9 @@ fn c_enum_variant(enum_name: &str, variant: &str) -> String {
 fn c_type(ty: &Type) -> String {
     match ty {
         Type::Bool => "bool".to_string(),
-        Type::Int(IntType::U4) => "uint8_t".to_string(),
+        Type::Int(IntType::U2) | Type::Int(IntType::U3) | Type::Int(IntType::U4) => {
+            "uint8_t".to_string()
+        }
         Type::Int(IntType::U8) => "uint8_t".to_string(),
         Type::Int(IntType::U16) => "uint16_t".to_string(),
         Type::Int(IntType::U32) => "uint32_t".to_string(),
@@ -771,7 +773,8 @@ fn expr_type(expr: &Expr, env: &HashMap<String, Type>, func_returns: &HashMap<St
             .map(|d| expr_type(d, env, func_returns))
             .or_else(|| arms.last().map(|a| expr_type(&a.expr, env, func_returns)))
             .unwrap_or(Type::Int(IntType::U8)),
-        Expr::IntCast { target, .. } | Expr::BitCast { target, .. } => Type::Int(*target),
+        Expr::IntCast { target, .. } => Type::Int(*target),
+        Expr::BitCast { target, .. } => target.clone(),
         Expr::Mod { left, right } | Expr::Rem { left, right } => combine_types(
             expr_type(left, env, func_returns),
             expr_type(right, env, func_returns),
@@ -1343,18 +1346,45 @@ fn emit_stmt(
                 _ => {
                     let mut first = true;
                     for arm in arms {
-                        let SwitchTag::Int(val) = &arm.tag else {
-                            return Err("integer switch requires integer arms".to_string());
+                        let cond = match &arm.tag {
+                            SwitchTag::Int(val) => format!("({scrut_s}) == {val}"),
+                            SwitchTag::IntRange { lo, hi, .. } => {
+                                format!("({scrut_s}) >= {lo} && ({scrut_s}) <= {hi}")
+                            }
+                            _ => {
+                                return Err("integer switch requires integer arms".to_string());
+                            }
                         };
                         if first {
-                            let _ = writeln!(out, "if (({scrut_s}) == {val}) {{");
+                            let _ = writeln!(out, "if ({cond}) {{");
                             first = false;
                         } else {
                             indent(out, depth);
-                            let _ = writeln!(out, "}} else if (({scrut_s}) == {val}) {{");
+                            let _ = writeln!(out, "}} else if ({cond}) {{");
+                        }
+                        let mut arm_env = env.clone();
+                        if let SwitchTag::IntRange {
+                            capture: Some(cap),
+                            ..
+                        } = &arm.tag
+                        {
+                            let ct = c_type(&scrutinee_ty);
+                            indent(out, depth + 1);
+                            let _ = writeln!(out, "{ct} {cap} = ({scrut_s});");
+                            arm_env.insert(cap.clone(), scrutinee_ty.clone());
                         }
                         for s in &arm.body {
-                            emit_stmt(out, s, depth + 1, env, return_type, func_returns, temp_id, loop_cont, loop_break_labels)?;
+                            emit_stmt(
+                                out,
+                                s,
+                                depth + 1,
+                                &mut arm_env,
+                                return_type,
+                                func_returns,
+                                temp_id,
+                                loop_cont,
+                                loop_break_labels,
+                            )?;
                         }
                     }
                     if !arms.is_empty() {
@@ -1690,7 +1720,7 @@ fn emit_expr(
             )
         }
         Expr::BitCast { expr, target } => {
-            emit_bitcast(expr, *target, env, func_returns, fn_return_type, temp_id)?
+            emit_bitcast(expr, target, env, func_returns, fn_return_type, temp_id)?
         }
         Expr::Mod { left, right } => emit_mod_rem(
             left,
@@ -1904,30 +1934,61 @@ fn emit_mod_rem(
     }
 }
 
+fn packed_struct_backing_int(s: &StructDef) -> IntType {
+    let bits: u32 = s
+        .fields
+        .iter()
+        .filter_map(|(_, ty)| ty.int_type().map(|t| t.bits()))
+        .sum();
+    let bytes = (bits + 7) / 8;
+    match bytes {
+        1 => IntType::U8,
+        2 => IntType::U16,
+        4 => IntType::U32,
+        8 => IntType::U64,
+        _ => IntType::U8,
+    }
+}
+
 fn emit_bitcast(
     expr: &Expr,
-    target: IntType,
+    target: &Type,
     env: &HashMap<String, Type>,
     func_returns: &HashMap<String, Type>,
     fn_return_type: &Type,
     temp_id: &mut usize,
 ) -> Result<String, String> {
     let inner_ty = expr_type(expr, env, func_returns);
-    let ct = c_int_type(target);
+    let inner_s = emit_expr(expr, env, None, func_returns, fn_return_type, temp_id)?;
+
+    if let Type::Struct(sname) = target {
+        if let Some(sdef) = lookup_struct(sname) {
+            if sdef.packed {
+                let backing = packed_struct_backing_int(&sdef);
+                let ct = c_int_type(backing);
+                return Ok(format!(
+                    "((union {{ {sname} s; {ct} v; }}){{ .v = ({ct})({inner_s}) }}).s"
+                ));
+            }
+        }
+        return Err(format!("@bitCast to non-packed struct {sname} is unsupported"));
+    }
+
+    let Type::Int(target_int) = target else {
+        return Err("@bitCast target must be an integer or packed struct".to_string());
+    };
+    let ct = c_int_type(*target_int);
+
     if let Type::Struct(sname) = &inner_ty {
         if let Some(sdef) = lookup_struct(sname) {
             if sdef.packed {
-                // Reinterpret packed struct bits as an integer using a C union type-pun.
-                // Compound literal: (union { StructName s; uint8_t v; }){ .s = expr }.v
-                let inner_s = emit_expr(expr, env, None, func_returns, fn_return_type, temp_id)?;
                 return Ok(format!(
                     "((union {{ {sname} s; {ct} v; }}){{ .s = {inner_s} }}).v"
                 ));
             }
         }
     }
-    // Fallback: simple C cast (not bit-accurate but handles trivial cases).
-    let inner_s = emit_expr(expr, env, None, func_returns, fn_return_type, temp_id)?;
+
     Ok(format!("({ct})({inner_s})"))
 }
 
@@ -1986,24 +2047,36 @@ fn emit_switch(
         None => Box::new(arms.iter().rev().skip(1)),
     };
     for arm in arm_iter {
-        let arm_expr = emit_expr(
+        let mut arm_env = env.clone();
+        let (cond, range_capture) = match (&scrutinee_ty, &arm.tag) {
+            (Type::Enum(enum_name), SwitchTag::EnumVariant { variant, .. }) => {
+                let tag = c_enum_variant(enum_name, variant);
+                (format!("({s}) == {tag}"), None)
+            }
+            (_, SwitchTag::Int(val)) => (format!("({s}) == {val}"), None),
+            (_, SwitchTag::IntRange { lo, hi, capture }) => {
+                if let Some(cap) = capture {
+                    arm_env.insert(cap.clone(), scrutinee_ty.clone());
+                }
+                (format!("({s}) >= {lo} && ({s}) <= {hi}"), capture.clone())
+            }
+            _ => return Err("switch arm tag does not match scrutinee type".to_string()),
+        };
+        let inner = emit_expr(
             &arm.expr,
-            env,
+            &arm_env,
             None,
             func_returns,
             fn_return_type,
             temp_id,
         )?;
-        result = match (&scrutinee_ty, &arm.tag) {
-            (Type::Enum(enum_name), SwitchTag::EnumVariant { variant, .. }) => {
-                let tag = c_enum_variant(enum_name, variant);
-                format!("(({s}) == {tag} ? ({arm_expr}) : ({result}))")
-            }
-            (_, SwitchTag::Int(val)) => {
-                format!("(({s}) == {val} ? ({arm_expr}) : ({result}))")
-            }
-            _ => return Err("switch arm tag does not match scrutinee type".to_string()),
+        let arm_expr = if let Some(cap) = range_capture {
+            let ct = c_type(&scrutinee_ty);
+            format!("({{ {ct} {cap} = ({s}); ({inner}); }})")
+        } else {
+            inner
         };
+        result = format!("({cond} ? ({arm_expr}) : ({result}))");
     }
     Ok(result)
 }

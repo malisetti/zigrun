@@ -36,6 +36,7 @@ pub enum TokenKind {
     FatArrow,
     Dot,
     DotDot,
+    Ellipsis,
     Ident(String),
     Int(u64),
     At,
@@ -202,7 +203,11 @@ impl<'a> Lexer<'a> {
             '@' => TokenKind::At,
             '.' => {
                 if self.eat('.') {
-                    TokenKind::DotDot
+                    if self.eat('.') {
+                        TokenKind::Ellipsis
+                    } else {
+                        TokenKind::DotDot
+                    }
                 } else {
                     TokenKind::Dot
                 }

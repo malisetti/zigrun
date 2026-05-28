@@ -1181,11 +1181,30 @@ impl Parser {
                     "bitCast" => {
                         let expr = self.parse_expr()?;
                         self.expect(TokenKind::RParen)?;
-                        let target = self.expr_type_hint
-                            .as_ref()
-                            .and_then(|t| t.int_type())
-                            .or_else(|| self.return_type.int_type())
-                            .ok_or_else(|| "@bitCast target must be an integer type".to_string())?;
+                        let target = self
+                            .expr_type_hint
+                            .clone()
+                            .or_else(|| {
+                                if self.return_type.int_type().is_some()
+                                    || self.return_type.struct_name().is_some()
+                                {
+                                    Some(self.return_type.clone())
+                                } else {
+                                    None
+                                }
+                            })
+                            .ok_or_else(|| {
+                                "@bitCast requires a type context (integer or packed struct)"
+                                    .to_string()
+                            })?;
+                        match &target {
+                            Type::Int(_) | Type::Struct(_) => {}
+                            _ => {
+                                return Err(
+                                    "@bitCast target must be an integer or struct type".to_string(),
+                                );
+                            }
+                        }
                         Ok(Expr::BitCast {
                             expr: Box::new(expr),
                             target,
@@ -1457,22 +1476,21 @@ impl Parser {
                 if scrutinee_enum.is_some() || scrutinee_union.is_some() {
                     return Err("enum/union switch requires `.variant =>` arms".to_string());
                 }
-                let val = match self.peek_kind() {
-                    TokenKind::Int(n) => {
-                        self.advance();
-                        n
-                    }
-                    other => {
-                        return Err(format!(
-                            "expected integer literal in switch arm, found {other:?}"
-                        ));
-                    }
-                };
+                let tags = self.parse_int_switch_tags()?;
                 self.expect(TokenKind::FatArrow)?;
-                arms.push(SwitchArm {
-                    tag: SwitchTag::Int(val),
-                    expr: self.parse_expr()?,
-                });
+                let capture = self.parse_switch_capture()?;
+                let expr = self.parse_expr()?;
+                for tag in tags {
+                    let tag = match tag {
+                        SwitchTag::IntRange { lo, hi, .. } => SwitchTag::IntRange {
+                            lo,
+                            hi,
+                            capture: capture.clone(),
+                        },
+                        other => other,
+                    };
+                    arms.push(SwitchArm { tag, expr: expr.clone() });
+                }
             }
             if self.check(&TokenKind::Comma) {
                 self.advance();
@@ -1569,18 +1587,40 @@ impl Parser {
                         ));
                     }
                 } else {
-                    let val = match self.peek_kind() {
-                        TokenKind::Int(n) => { self.advance(); n }
-                        other => return Err(format!("expected integer literal in switch arm, found {other:?}")),
-                    };
-                    SwitchTag::Int(val)
+                    return Err(format!(
+                        "expected `.variant` or integer switch arm, found {:?}",
+                        self.peek_kind()
+                    ));
                 }
+            } else if self.check(&TokenKind::Else) {
+                return Err("switch statement does not support `else` arm".to_string());
             } else {
-                let val = match self.peek_kind() {
-                    TokenKind::Int(n) => { self.advance(); n }
-                    other => return Err(format!("expected integer literal in switch arm, found {other:?}")),
+                let tags = self.parse_int_switch_tags()?;
+                self.expect(TokenKind::FatArrow)?;
+                let capture = self.parse_switch_capture()?;
+                let body = if self.check(&TokenKind::LBrace) {
+                    self.parse_block()?
+                } else {
+                    vec![self.parse_switch_arm_stmt()?]
                 };
-                SwitchTag::Int(val)
+                for tag in tags {
+                    let tag = match tag {
+                        SwitchTag::IntRange { lo, hi, .. } => SwitchTag::IntRange {
+                            lo,
+                            hi,
+                            capture: capture.clone(),
+                        },
+                        other => other,
+                    };
+                    arms.push(SwitchStmtArm {
+                        tag,
+                        body: body.clone(),
+                    });
+                }
+                if self.check(&TokenKind::Comma) {
+                    self.advance();
+                }
+                continue;
             };
             self.expect(TokenKind::FatArrow)?;
             let tag = match tag {
@@ -1681,6 +1721,50 @@ impl Parser {
                 .and_then(|t| t.error_union_err_set().map(str::to_string)),
             _ => None,
         }
+    }
+
+    fn parse_int_switch_tags(&mut self) -> Result<Vec<SwitchTag>, String> {
+        let mut tags = Vec::new();
+        loop {
+            let lo = match self.peek_kind() {
+                TokenKind::Int(n) => {
+                    self.advance();
+                    n
+                }
+                other => {
+                    return Err(format!(
+                        "expected integer literal in switch arm, found {other:?}"
+                    ));
+                }
+            };
+            if self.check(&TokenKind::Ellipsis) {
+                self.advance();
+                let hi = match self.peek_kind() {
+                    TokenKind::Int(n) => {
+                        self.advance();
+                        n
+                    }
+                    other => {
+                        return Err(format!(
+                            "expected integer literal after `...`, found {other:?}"
+                        ));
+                    }
+                };
+                tags.push(SwitchTag::IntRange {
+                    lo,
+                    hi,
+                    capture: None,
+                });
+                break;
+            }
+            tags.push(SwitchTag::Int(lo));
+            if self.check(&TokenKind::Comma) && matches!(self.tokens.get(self.pos + 1).map(|t| &t.kind), Some(TokenKind::Int(_))) {
+                self.advance();
+                continue;
+            }
+            break;
+        }
+        Ok(tags)
     }
 
     fn parse_switch_capture(&mut self) -> Result<Option<String>, String> {
@@ -1806,7 +1890,8 @@ fn infer_expr_type(
         )
         .error_union_payload()
         .unwrap_or(Type::Int(IntType::U8)),
-        Expr::IntCast { target, .. } | Expr::BitCast { target, .. } => Type::Int(*target),
+        Expr::IntCast { target, .. } => Type::Int(*target),
+        Expr::BitCast { target, .. } => target.clone(),
         Expr::Mod { left, right } | Expr::Rem { left, right } => {
             let lt = infer_expr_type(left, enums, structs, unions, locals, functions);
             let rt = infer_expr_type(right, enums, structs, unions, locals, functions);
