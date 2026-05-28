@@ -228,6 +228,12 @@ fn collect_optionals_in_stmts(stmts: &[Stmt], add: &mut dyn FnMut(&Type)) {
             }
             Stmt::ForArray { body, .. } => collect_optionals_in_stmts(body, add),
             Stmt::Break { .. } | Stmt::Continue => {}
+            Stmt::Switch { scrutinee, arms } => {
+                collect_optionals_in_expr(scrutinee, add);
+                for arm in arms {
+                    collect_optionals_in_stmts(&arm.body, add);
+                }
+            }
         }
     }
 }
@@ -353,6 +359,12 @@ fn collect_error_unions_in_stmts(stmts: &[Stmt], add: &mut dyn FnMut(&Type)) {
             }
             Stmt::ForArray { body, .. } => collect_error_unions_in_stmts(body, add),
             Stmt::Break { .. } | Stmt::Continue => {}
+            Stmt::Switch { scrutinee, arms } => {
+                collect_error_unions_in_expr(scrutinee, add);
+                for arm in arms {
+                    collect_error_unions_in_stmts(&arm.body, add);
+                }
+            }
         }
     }
 }
@@ -1082,6 +1094,82 @@ fn emit_stmt(
                 indent(out, depth);
                 let _ = writeln!(out, "{c_label}: ;");
                 loop_break_labels.pop();
+            }
+        }
+        Stmt::Switch { scrutinee, arms } => {
+            let scrut_s = emit_expr(scrutinee, env, None, func_returns, return_type, temp_id)?;
+            let scrutinee_ty = expr_type(scrutinee, env, func_returns);
+            match &scrutinee_ty {
+                Type::Union(union_name) => {
+                    let udef = lookup_union(union_name)
+                        .ok_or_else(|| format!("unknown union {union_name}"))?;
+                    let mut first = true;
+                    for arm in arms {
+                        let SwitchTag::UnionVariant { variant, .. } = &arm.tag else {
+                            return Err("union switch requires union variant arms".to_string());
+                        };
+                        let tag = c_union_tag(&udef, variant);
+                        if first {
+                            let _ = writeln!(out, "if (({scrut_s}).tag == {tag}) {{");
+                            first = false;
+                        } else {
+                            indent(out, depth);
+                            let _ = writeln!(out, "}} else if (({scrut_s}).tag == {tag}) {{");
+                        }
+                        for s in &arm.body {
+                            emit_stmt(out, s, depth + 1, env, return_type, func_returns, temp_id, loop_cont, loop_break_labels)?;
+                        }
+                    }
+                    if !arms.is_empty() {
+                        indent(out, depth);
+                        out.push_str("}\n");
+                    }
+                }
+                Type::Enum(enum_name) => {
+                    let mut first = true;
+                    for arm in arms {
+                        let SwitchTag::EnumVariant { variant, .. } = &arm.tag else {
+                            return Err("enum switch requires enum variant arms".to_string());
+                        };
+                        let tag = c_enum_variant(enum_name, variant);
+                        if first {
+                            let _ = writeln!(out, "if (({scrut_s}) == {tag}) {{");
+                            first = false;
+                        } else {
+                            indent(out, depth);
+                            let _ = writeln!(out, "}} else if (({scrut_s}) == {tag}) {{");
+                        }
+                        for s in &arm.body {
+                            emit_stmt(out, s, depth + 1, env, return_type, func_returns, temp_id, loop_cont, loop_break_labels)?;
+                        }
+                    }
+                    if !arms.is_empty() {
+                        indent(out, depth);
+                        out.push_str("}\n");
+                    }
+                }
+                _ => {
+                    let mut first = true;
+                    for arm in arms {
+                        let SwitchTag::Int(val) = &arm.tag else {
+                            return Err("integer switch requires integer arms".to_string());
+                        };
+                        if first {
+                            let _ = writeln!(out, "if (({scrut_s}) == {val}) {{");
+                            first = false;
+                        } else {
+                            indent(out, depth);
+                            let _ = writeln!(out, "}} else if (({scrut_s}) == {val}) {{");
+                        }
+                        for s in &arm.body {
+                            emit_stmt(out, s, depth + 1, env, return_type, func_returns, temp_id, loop_cont, loop_break_labels)?;
+                        }
+                    }
+                    if !arms.is_empty() {
+                        indent(out, depth);
+                        out.push_str("}\n");
+                    }
+                }
             }
         }
     }

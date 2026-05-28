@@ -245,6 +245,16 @@ pub enum Stmt {
         array: String,
         body: Vec<Stmt>,
     },
+    Switch {
+        scrutinee: Expr,
+        arms: Vec<SwitchStmtArm>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitchStmtArm {
+    pub tag: SwitchTag,
+    pub body: Vec<Stmt>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

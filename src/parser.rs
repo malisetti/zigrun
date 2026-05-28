@@ -21,7 +21,7 @@
 
 use crate::ast::{
     AssignTarget, BinOp, EnumDef, EnumVariant, ErrorSetDef, Expr, Function, IntType, Program, Stmt,
-    StructDef, SwitchArm, SwitchTag, Type, UnionDef, UnionVariant,
+    StructDef, SwitchArm, SwitchStmtArm, SwitchTag, Type, UnionDef, UnionVariant,
 };
 use crate::lexer::{Token, TokenKind};
 use std::collections::HashMap;
@@ -424,6 +424,7 @@ impl Parser {
                 Ok(Stmt::Continue)
             }
             TokenKind::For => self.parse_for_stmt(None),
+            TokenKind::Switch => self.parse_switch_stmt(),
             TokenKind::Ident(name) if self.check_next(&TokenKind::Colon) => {
                 let label = name;
                 self.advance();
@@ -1229,6 +1230,70 @@ impl Parser {
             arms,
             default,
         })
+    }
+
+    fn parse_switch_stmt(&mut self) -> Result<Stmt, String> {
+        self.advance();
+        self.expect(TokenKind::LParen)?;
+        let scrutinee = self.parse_expr()?;
+        let scrutinee_union = self.infer_union_type(&scrutinee);
+        let scrutinee_enum = self.infer_enum_type(&scrutinee);
+        self.expect(TokenKind::RParen)?;
+        self.expect(TokenKind::LBrace)?;
+        let mut arms = Vec::new();
+        while !self.check(&TokenKind::RBrace) && !self.check(&TokenKind::Eof) {
+            let tag = if self.check(&TokenKind::Dot) {
+                self.advance();
+                let variant = self.expect_ident()?;
+                if let Some(ref union_name) = scrutinee_union {
+                    SwitchTag::UnionVariant {
+                        union_name: union_name.clone(),
+                        variant,
+                        capture: None,
+                    }
+                } else if let Some(ref enum_name) = scrutinee_enum {
+                    SwitchTag::EnumVariant {
+                        enum_name: enum_name.clone(),
+                        variant,
+                    }
+                } else {
+                    return Err("dot arm requires enum or union scrutinee".to_string());
+                }
+            } else {
+                let val = match self.peek_kind() {
+                    TokenKind::Int(n) => { self.advance(); n }
+                    other => return Err(format!("expected integer literal in switch arm, found {other:?}")),
+                };
+                SwitchTag::Int(val)
+            };
+            self.expect(TokenKind::FatArrow)?;
+            let body = if self.check(&TokenKind::LBrace) {
+                self.parse_block()?
+            } else {
+                vec![self.parse_switch_arm_stmt()?]
+            };
+            arms.push(SwitchStmtArm { tag, body });
+            if self.check(&TokenKind::Comma) {
+                self.advance();
+            }
+        }
+        self.expect(TokenKind::RBrace)?;
+        Ok(Stmt::Switch { scrutinee, arms })
+    }
+
+    fn parse_switch_arm_stmt(&mut self) -> Result<Stmt, String> {
+        match self.peek_kind() {
+            TokenKind::Return => {
+                self.advance();
+                let expr = self.parse_expr()?;
+                Ok(Stmt::Return(expr))
+            }
+            TokenKind::If => {
+                self.advance();
+                self.parse_if_stmt()
+            }
+            other => Err(format!("expected statement in switch arm, found {other:?}")),
+        }
     }
 
     fn infer_enum_type(&self, expr: &Expr) -> Option<String> {
