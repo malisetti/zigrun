@@ -38,6 +38,7 @@ pub struct Parser {
     locals: HashMap<String, Type>,
     expr_enum_hint: Option<String>,
     expr_union_hint: Option<String>,
+    struct_methods: HashMap<String, Vec<String>>,
 }
 
 impl Parser {
@@ -54,6 +55,7 @@ impl Parser {
             locals: HashMap::new(),
             expr_enum_hint: None,
             expr_union_hint: None,
+            struct_methods: HashMap::new(),
         }
     }
 
@@ -69,7 +71,12 @@ impl Parser {
                 match decl {
                     TopLevelDecl::Enum(e) => enum_defs.push(e),
                     TopLevelDecl::ErrorSet(e) => error_set_defs.push(e),
-                    TopLevelDecl::Struct(s) => struct_defs.push(s),
+                    TopLevelDecl::Struct(s) => {
+                        for m in &s.methods {
+                            functions.push(m.clone());
+                        }
+                        struct_defs.push(s);
+                    }
                     TopLevelDecl::Union(u) => union_defs.push(u),
                 }
             } else {
@@ -224,22 +231,71 @@ impl Parser {
         self.expect(TokenKind::Struct)?;
         self.expect(TokenKind::LBrace)?;
         let mut fields = Vec::new();
+        let mut methods = Vec::new();
+        // Register the struct name early so method bodies can reference the type.
+        self.structs.insert(name.clone(), Vec::new());
         while !self.check(&TokenKind::RBrace) && !self.check(&TokenKind::Eof) {
-            let field = self.expect_ident()?;
-            self.expect(TokenKind::Colon)?;
-            let ty = self.parse_type()?;
-            fields.push((field, ty));
-            if self.check(&TokenKind::Comma) {
-                self.advance();
+            if self.check(&TokenKind::Fn) {
+                let method = self.parse_struct_method(&name)?;
+                let short_name = method.name
+                    .strip_prefix(&format!("{}_", name))
+                    .unwrap_or(&method.name)
+                    .to_string();
+                self.struct_methods.entry(name.clone()).or_default().push(short_name);
+                self.functions.insert(method.name.clone(), method.return_type.clone());
+                methods.push(method);
+            } else {
+                let field = self.expect_ident()?;
+                self.expect(TokenKind::Colon)?;
+                let ty = self.parse_type()?;
+                fields.push((field, ty));
+                if self.check(&TokenKind::Comma) {
+                    self.advance();
+                }
             }
         }
         self.expect(TokenKind::RBrace)?;
         self.expect(TokenKind::Semicolon)?;
-        if fields.is_empty() {
+        if fields.is_empty() && methods.is_empty() {
             return Err(format!("struct {name} has no fields"));
         }
         self.structs.insert(name.clone(), fields.clone());
-        Ok(StructDef { name, fields })
+        Ok(StructDef { name, fields, methods })
+    }
+
+    fn parse_struct_method(&mut self, struct_name: &str) -> Result<crate::ast::Function, String> {
+        self.expect(TokenKind::Fn)?;
+        let short_name = self.expect_ident()?;
+        let mangled_name = format!("{}_{}", struct_name, short_name);
+        self.expect(TokenKind::LParen)?;
+        let mut params = Vec::new();
+        if !self.check(&TokenKind::RParen) {
+            loop {
+                let p = self.expect_ident()?;
+                self.expect(TokenKind::Colon)?;
+                let ty = self.parse_type()?;
+                params.push((p, ty));
+                if self.check(&TokenKind::Comma) {
+                    self.advance();
+                } else {
+                    break;
+                }
+            }
+        }
+        self.expect(TokenKind::RParen)?;
+        let return_type = self.parse_type()?;
+        self.return_type = return_type.clone();
+        self.locals.clear();
+        for (p, ty) in &params {
+            self.locals.insert(p.clone(), ty.clone());
+        }
+        let body = self.parse_block()?;
+        Ok(crate::ast::Function {
+            name: mangled_name,
+            params,
+            return_type,
+            body,
+        })
     }
 
     fn parse_function(&mut self) -> Result<Function, String> {
@@ -832,6 +888,32 @@ impl Parser {
                             variant: field,
                         };
                         continue;
+                    }
+                }
+                // Check for method call: expr.method(args)
+                if self.check(&TokenKind::LParen) {
+                    let struct_name = match &expr {
+                        Expr::Var(v) => self.locals.get(v).and_then(|t| t.struct_name().map(str::to_string)),
+                        _ => None,
+                    };
+                    if let Some(sn) = struct_name {
+                        if self.struct_methods.get(&sn).map_or(false, |ms| ms.contains(&field)) {
+                            self.advance(); // consume (
+                            let mut args = vec![expr];
+                            if !self.check(&TokenKind::RParen) {
+                                loop {
+                                    args.push(self.parse_expr()?);
+                                    if self.check(&TokenKind::Comma) {
+                                        self.advance();
+                                    } else {
+                                        break;
+                                    }
+                                }
+                            }
+                            self.expect(TokenKind::RParen)?;
+                            expr = Expr::Call { name: format!("{}_{}", sn, field), args };
+                            continue;
+                        }
                     }
                 }
                 expr = Expr::FieldAccess {

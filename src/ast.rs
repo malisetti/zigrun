@@ -174,6 +174,7 @@ pub struct ErrorSetDef {
 pub struct StructDef {
     pub name: String,
     pub fields: Vec<(String, Type)>,
+    pub methods: Vec<Function>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
