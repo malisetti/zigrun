@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Long-running PROGRESS supervisor for the zigrun self-driving loop.
+# Operators start THIS script only — they do not implement waves (see OPERATOR_BOUNDARY.md).
 #
 # MODE=frontier (default): six cursor implementers (max-tasks=1 each) +
 # cursor local-integrator; restarts frontier_run.sh until budget.
@@ -10,7 +11,7 @@ REPO_ROOT="$(cd .. && pwd)"
 NF=/Users/b/.local/bin/nfltr
 KEY=rpc_eb308b4f651879bde55a79de2acc1371916176bffdd1745d61dd8586997760a0831d79c9a288b96c46fad9441ddfa55c
 LOGD=../out/fleet; mkdir -p "$LOGD"
-CHECK=480
+CHECK=120
 BUDGET="${SUP_BUDGET:-14400}"
 MODE="${MODE:-frontier}"
 # One pending wave per cursor worker per batch (fleet size = 6).

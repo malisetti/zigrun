@@ -39,15 +39,14 @@ This is the **subset** (the language we are committing to support). It grows one
 wave at a time — widen it by adding programs to `oracle/`, never by relaxing the
 check.
 
-## North star: Hello, world!
+## Self-evolving orchestration (only path for compiler work)
 
-The evolution loop ([`evolve/GOAL.md`](evolve/GOAL.md), [`evolve/WAVES.md`](evolve/WAVES.md),
-[`evolve/frontier_run.sh`](evolve/frontier_run.sh)) drives the compiler until
-`bash oracle/diff.sh helloworld` is differentially green vs real Zig. Run:
+Operators and chat agents **do not** edit `zigrun/src` to land features — see
+[`evolve/OPERATOR_BOUNDARY.md`](evolve/OPERATOR_BOUNDARY.md). Progress comes from
+workers via [`evolve/supervise.sh`](evolve/supervise.sh) + [`evolve/frontier_run.sh`](evolve/frontier_run.sh)
+toward a **full Zig compiler**, gated by [`oracle/diff.sh`](oracle/diff.sh) vs real Zig.
 
-```bash
-zigrun run oracle/helloworld.zig   # prints Hello, world! on stderr (matches zig run)
-```
+Start the loop: `MODE=frontier bash zigrun/evolve/supervise.sh` (see [`evolve/GOAL.md`](evolve/GOAL.md)).
 
 ## The orchestration plan (oracle-gated vertical slices)
 
