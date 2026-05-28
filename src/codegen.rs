@@ -285,7 +285,7 @@ fn collect_optionals_in_expr(expr: &Expr, add: &mut dyn FnMut(&Type)) {
             collect_optionals_in_expr(right, add);
         }
         Expr::Try(e) => collect_optionals_in_expr(e, add),
-        Expr::Catch { expr, fallback } | Expr::CatchReturn { expr, ret_val: fallback } => {
+        Expr::Catch { expr, fallback, .. } | Expr::CatchReturn { expr, ret_val: fallback, .. } => {
             collect_optionals_in_expr(expr, add);
             collect_optionals_in_expr(fallback, add);
         }
@@ -427,7 +427,7 @@ fn collect_error_unions_in_expr(expr: &Expr, add: &mut dyn FnMut(&Type)) {
             collect_error_unions_in_expr(right, add);
         }
         Expr::Try(e) => collect_error_unions_in_expr(e, add),
-        Expr::Catch { expr, fallback } | Expr::CatchReturn { expr, ret_val: fallback } => {
+        Expr::Catch { expr, fallback, .. } | Expr::CatchReturn { expr, ret_val: fallback, .. } => {
             collect_error_unions_in_expr(expr, add);
             collect_error_unions_in_expr(fallback, add);
         }
@@ -1557,7 +1557,7 @@ fn emit_expr(
                 "({{ {st} {tmp} = {call}; if ({tmp}.err != {ok}) return {tmp}; {tmp}.value; }})"
             )
         }
-        Expr::Catch { expr, fallback } => {
+        Expr::Catch { expr, fallback, .. } => {
             let inner_ty = expr_type(expr, env, func_returns);
             let Type::ErrorUnion { err_set, payload } = inner_ty else {
                 return Err("catch requires error union expression".to_string());
@@ -1585,7 +1585,7 @@ fn emit_expr(
                 "({{ {st} {tmp} = {call}; {tmp}.err == {ok} ? {tmp}.value : ({fb}); }})"
             )
         }
-        Expr::CatchReturn { expr, ret_val } => {
+        Expr::CatchReturn { expr, ret_val, .. } => {
             let inner_ty = expr_type(expr, env, func_returns);
             let Type::ErrorUnion { err_set, payload } = inner_ty else {
                 return Err("catch requires error union expression".to_string());

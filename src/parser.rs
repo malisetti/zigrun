@@ -1011,17 +1011,20 @@ impl Parser {
         }
         if self.check(&TokenKind::Catch) {
             self.advance();
+            let capture = self.parse_switch_capture()?;
             if self.check(&TokenKind::Return) {
                 self.advance();
                 let ret_val = self.parse_unary()?;
                 expr = Expr::CatchReturn {
                     expr: Box::new(expr),
+                    capture,
                     ret_val: Box::new(ret_val),
                 };
             } else {
                 let fallback = self.parse_unary()?;
                 expr = Expr::Catch {
                     expr: Box::new(expr),
+                    capture,
                     fallback: Box::new(fallback),
                 };
             }
@@ -1608,6 +1611,16 @@ impl Parser {
                 .locals
                 .get(name)
                 .and_then(|t| t.union_name().map(str::to_string)),
+            _ => None,
+        }
+    }
+
+    fn infer_error_set_type(&self, expr: &Expr) -> Option<String> {
+        match expr {
+            Expr::Var(name) => self
+                .locals
+                .get(name)
+                .and_then(|t| t.error_union_err_set().map(str::to_string)),
             _ => None,
         }
     }

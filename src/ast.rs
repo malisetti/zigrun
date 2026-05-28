@@ -295,6 +295,10 @@ pub enum SwitchTag {
         variant: String,
         capture: Option<String>,
     },
+    ErrorVariant {
+        err_set: String,
+        variant: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -368,10 +372,12 @@ pub enum Expr {
     Try(Box<Expr>),
     Catch {
         expr: Box<Expr>,
+        capture: Option<String>,
         fallback: Box<Expr>,
     },
     CatchReturn {
         expr: Box<Expr>,
+        capture: Option<String>,
         ret_val: Box<Expr>,
     },
     ErrorLiteral {
