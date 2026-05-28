@@ -17,18 +17,23 @@ use std::fmt::Write;
 thread_local! {
     static ENUM_DEFS: RefCell<HashMap<String, EnumDef>> = RefCell::new(HashMap::new());
     static UNION_DEFS: RefCell<HashMap<String, UnionDef>> = RefCell::new(HashMap::new());
+    static STRUCT_DEFS: RefCell<HashMap<String, StructDef>> = RefCell::new(HashMap::new());
 }
 
 fn with_type_defs<R>(
     enums: &HashMap<String, EnumDef>,
     unions: &HashMap<String, UnionDef>,
+    structs: &HashMap<String, StructDef>,
     f: impl FnOnce() -> R,
 ) -> R {
     ENUM_DEFS.with(|cell| {
         *cell.borrow_mut() = enums.clone();
         UNION_DEFS.with(|u_cell| {
             *u_cell.borrow_mut() = unions.clone();
-            f()
+            STRUCT_DEFS.with(|s_cell| {
+                *s_cell.borrow_mut() = structs.clone();
+                f()
+            })
         })
     })
 }
@@ -39,6 +44,10 @@ fn lookup_enum(name: &str) -> Option<EnumDef> {
 
 fn lookup_union(name: &str) -> Option<UnionDef> {
     UNION_DEFS.with(|cell| cell.borrow().get(name).cloned())
+}
+
+fn lookup_struct(name: &str) -> Option<StructDef> {
+    STRUCT_DEFS.with(|cell| cell.borrow().get(name).cloned())
 }
 
 pub fn emit_c(program: &Program) -> Result<String, String> {
@@ -101,8 +110,13 @@ pub fn emit_c(program: &Program) -> Result<String, String> {
         .iter()
         .map(|u| (u.name.clone(), u.clone()))
         .collect();
+    let struct_defs: HashMap<String, StructDef> = program
+        .structs
+        .iter()
+        .map(|s| (s.name.clone(), s.clone()))
+        .collect();
 
-    with_type_defs(&enum_defs, &union_defs, || {
+    with_type_defs(&enum_defs, &union_defs, &struct_defs, || {
         for f in &program.functions {
             emit_function(&mut out, f, &func_returns)?;
             out.push('\n');
@@ -121,6 +135,13 @@ fn c_fn(name: &str) -> String {
 fn emit_struct_def(out: &mut String, s: &StructDef) -> Result<(), String> {
     let _ = writeln!(out, "typedef struct {{");
     for (field, ty) in &s.fields {
+        if s.packed {
+            if let Type::Int(it) = ty {
+                let bits = it.bits();
+                let _ = writeln!(out, "    {} {} : {};", c_type(ty), field, bits);
+                continue;
+            }
+        }
         let _ = writeln!(out, "    {} {};", c_type(ty), field);
     }
     let _ = writeln!(out, "}} {};", s.name);
@@ -288,7 +309,7 @@ fn collect_optionals_in_expr(expr: &Expr, add: &mut dyn FnMut(&Type)) {
                 collect_optionals_in_expr(d, add);
             }
         }
-        Expr::IntCast { expr, .. } | Expr::UnaryNeg(expr) | Expr::UnaryNot(expr) => {
+        Expr::IntCast { expr, .. } | Expr::BitCast { expr, .. } | Expr::UnaryNeg(expr) | Expr::UnaryNot(expr) => {
             collect_optionals_in_expr(expr, add);
         }
         Expr::Mod { left, right } | Expr::Rem { left, right } => {
@@ -428,7 +449,7 @@ fn collect_error_unions_in_expr(expr: &Expr, add: &mut dyn FnMut(&Type)) {
                 collect_error_unions_in_expr(d, add);
             }
         }
-        Expr::IntCast { expr, .. } | Expr::UnaryNeg(expr) | Expr::UnaryNot(expr) => {
+        Expr::IntCast { expr, .. } | Expr::BitCast { expr, .. } | Expr::UnaryNeg(expr) | Expr::UnaryNot(expr) => {
             collect_error_unions_in_expr(expr, add);
         }
         Expr::Mod { left, right } | Expr::Rem { left, right } => {
@@ -554,6 +575,7 @@ fn c_enum_variant(enum_name: &str, variant: &str) -> String {
 fn c_type(ty: &Type) -> String {
     match ty {
         Type::Bool => "bool".to_string(),
+        Type::Int(IntType::U4) => "uint8_t".to_string(),
         Type::Int(IntType::U8) => "uint8_t".to_string(),
         Type::Int(IntType::U16) => "uint16_t".to_string(),
         Type::Int(IntType::U32) => "uint32_t".to_string(),
@@ -715,7 +737,7 @@ fn expr_type(expr: &Expr, env: &HashMap<String, Type>, func_returns: &HashMap<St
             .map(|d| expr_type(d, env, func_returns))
             .or_else(|| arms.last().map(|a| expr_type(&a.expr, env, func_returns)))
             .unwrap_or(Type::Int(IntType::U8)),
-        Expr::IntCast { target, .. } => Type::Int(*target),
+        Expr::IntCast { target, .. } | Expr::BitCast { target, .. } => Type::Int(*target),
         Expr::Mod { left, right } | Expr::Rem { left, right } => combine_types(
             expr_type(left, env, func_returns),
             expr_type(right, env, func_returns),
@@ -1530,6 +1552,9 @@ fn emit_expr(
                 emit_expr(expr, env, None, func_returns, fn_return_type, temp_id)?
             )
         }
+        Expr::BitCast { expr, target } => {
+            emit_bitcast(expr, *target, env, func_returns, fn_return_type, temp_id)?
+        }
         Expr::Mod { left, right } => emit_mod_rem(
             left,
             right,
@@ -1728,6 +1753,33 @@ fn emit_mod_rem(
     } else {
         Ok(format!("(({ct})({l}) % ({ct})({r}))"))
     }
+}
+
+fn emit_bitcast(
+    expr: &Expr,
+    target: IntType,
+    env: &HashMap<String, Type>,
+    func_returns: &HashMap<String, Type>,
+    fn_return_type: &Type,
+    temp_id: &mut usize,
+) -> Result<String, String> {
+    let inner_ty = expr_type(expr, env, func_returns);
+    let ct = c_int_type(target);
+    if let Type::Struct(sname) = &inner_ty {
+        if let Some(sdef) = lookup_struct(sname) {
+            if sdef.packed {
+                // Reinterpret packed struct bits as an integer using a C union type-pun.
+                // Compound literal: (union { StructName s; uint8_t v; }){ .s = expr }.v
+                let inner_s = emit_expr(expr, env, None, func_returns, fn_return_type, temp_id)?;
+                return Ok(format!(
+                    "((union {{ {sname} s; {ct} v; }}){{ .s = {inner_s} }}).v"
+                ));
+            }
+        }
+    }
+    // Fallback: simple C cast (not bit-accurate but handles trivial cases).
+    let inner_s = emit_expr(expr, env, None, func_returns, fn_return_type, temp_id)?;
+    Ok(format!("({ct})({inner_s})"))
 }
 
 fn emit_switch(

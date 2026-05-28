@@ -38,7 +38,9 @@ pub struct Parser {
     locals: HashMap<String, Type>,
     expr_enum_hint: Option<String>,
     expr_union_hint: Option<String>,
+    expr_type_hint: Option<Type>,
     struct_methods: HashMap<String, Vec<String>>,
+    packed_structs: std::collections::HashSet<String>,
 }
 
 impl Parser {
@@ -55,7 +57,9 @@ impl Parser {
             locals: HashMap::new(),
             expr_enum_hint: None,
             expr_union_hint: None,
+            expr_type_hint: None,
             struct_methods: HashMap::new(),
+            packed_structs: std::collections::HashSet::new(),
         }
     }
 
@@ -102,8 +106,11 @@ impl Parser {
         self.expect(TokenKind::Const)?;
         let name = self.expect_ident()?;
         self.expect(TokenKind::Assign)?;
-        if self.check(&TokenKind::Struct) {
-            Ok(TopLevelDecl::Struct(self.parse_struct_body(name)?))
+        if self.check(&TokenKind::Packed) {
+            self.advance();
+            Ok(TopLevelDecl::Struct(self.parse_struct_body(name, true)?))
+        } else if self.check(&TokenKind::Struct) {
+            Ok(TopLevelDecl::Struct(self.parse_struct_body(name, false)?))
         } else if self.check(&TokenKind::Union) {
             Ok(TopLevelDecl::Union(self.parse_union_body(name)?))
         } else if self.check(&TokenKind::Error) {
@@ -227,13 +234,16 @@ impl Parser {
         })
     }
 
-    fn parse_struct_body(&mut self, name: String) -> Result<StructDef, String> {
+    fn parse_struct_body(&mut self, name: String, packed: bool) -> Result<StructDef, String> {
         self.expect(TokenKind::Struct)?;
         self.expect(TokenKind::LBrace)?;
         let mut fields = Vec::new();
         let mut methods = Vec::new();
         // Register the struct name early so method bodies can reference the type.
         self.structs.insert(name.clone(), Vec::new());
+        if packed {
+            self.packed_structs.insert(name.clone());
+        }
         while !self.check(&TokenKind::RBrace) && !self.check(&TokenKind::Eof) {
             if self.check(&TokenKind::Fn) {
                 let method = self.parse_struct_method(&name)?;
@@ -260,7 +270,7 @@ impl Parser {
             return Err(format!("struct {name} has no fields"));
         }
         self.structs.insert(name.clone(), fields.clone());
-        Ok(StructDef { name, fields, methods })
+        Ok(StructDef { name, packed, fields, methods })
     }
 
     fn parse_struct_method(&mut self, struct_name: &str) -> Result<crate::ast::Function, String> {
@@ -419,9 +429,11 @@ impl Parser {
                 if let Some(Type::Union(union_name)) = &ty {
                     self.expr_union_hint = Some(union_name.clone());
                 }
+                self.expr_type_hint = ty.clone();
                 let value = self.parse_expr()?;
                 self.expr_enum_hint = None;
                 self.expr_union_hint = None;
+                self.expr_type_hint = None;
                 let ty = ty.unwrap_or_else(|| {
                     infer_expr_type(
                         &value,
@@ -1026,6 +1038,19 @@ impl Parser {
                         self.expect(TokenKind::RParen)?;
                         Ok(Expr::IntFromEnum(Box::new(expr)))
                     }
+                    "bitCast" => {
+                        let expr = self.parse_expr()?;
+                        self.expect(TokenKind::RParen)?;
+                        let target = self.expr_type_hint
+                            .as_ref()
+                            .and_then(|t| t.int_type())
+                            .or_else(|| self.return_type.int_type())
+                            .ok_or_else(|| "@bitCast target must be an integer type".to_string())?;
+                        Ok(Expr::BitCast {
+                            expr: Box::new(expr),
+                            target,
+                        })
+                    }
                     other => Err(format!("unsupported builtin @{other}")),
                 }
             }
@@ -1564,7 +1589,7 @@ fn infer_expr_type(
         )
         .error_union_payload()
         .unwrap_or(Type::Int(IntType::U8)),
-        Expr::IntCast { target, .. } => Type::Int(*target),
+        Expr::IntCast { target, .. } | Expr::BitCast { target, .. } => Type::Int(*target),
         Expr::Mod { left, right } | Expr::Rem { left, right } => {
             let lt = infer_expr_type(left, enums, structs, unions, locals, functions);
             let rt = infer_expr_type(right, enums, structs, unions, locals, functions);

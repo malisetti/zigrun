@@ -110,6 +110,7 @@ impl Type {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IntType {
+    U4,
     U8,
     U16,
     U32,
@@ -123,6 +124,7 @@ pub enum IntType {
 impl IntType {
     pub fn from_name(name: &str) -> Option<Self> {
         match name {
+            "u4" => Some(IntType::U4),
             "u8" => Some(IntType::U8),
             "u16" => Some(IntType::U16),
             "u32" => Some(IntType::U32),
@@ -139,13 +141,24 @@ impl IntType {
         matches!(self, IntType::I8 | IntType::I16 | IntType::I32 | IntType::I64)
     }
 
+    pub fn bits(self) -> u32 {
+        match self {
+            IntType::U4 => 4,
+            IntType::U8 | IntType::I8 => 8,
+            IntType::U16 | IntType::I16 => 16,
+            IntType::U32 | IntType::I32 => 32,
+            IntType::U64 | IntType::I64 => 64,
+        }
+    }
+
     pub fn rank(self) -> u8 {
         match self {
-            IntType::U8 | IntType::I8 => 0,
-            IntType::U16 | IntType::I16 => 1,
-            IntType::U32 | IntType::I32 => 2,
-            IntType::I64 => 3,
-            IntType::U64 => 4,
+            IntType::U4 => 0,
+            IntType::U8 | IntType::I8 => 1,
+            IntType::U16 | IntType::I16 => 2,
+            IntType::U32 | IntType::I32 => 3,
+            IntType::I64 => 4,
+            IntType::U64 => 5,
         }
     }
 }
@@ -173,6 +186,7 @@ pub struct ErrorSetDef {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StructDef {
     pub name: String,
+    pub packed: bool,
     pub fields: Vec<(String, Type)>,
     pub methods: Vec<Function>,
 }
@@ -309,6 +323,10 @@ pub enum Expr {
         variant: String,
     },
     IntCast {
+        expr: Box<Expr>,
+        target: IntType,
+    },
+    BitCast {
         expr: Box<Expr>,
         target: IntType,
     },
