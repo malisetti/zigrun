@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Long-running PROGRESS supervisor for the zigrun self-driving loop.
 #
-# MODE=frontier (default): keeps the impl fleet + local-integrator alive and
+# MODE=frontier (default): Cursor implementer fleet + cursor local-integrator;
 # restarts zigrun/evolve/frontier_run.sh (nfltr orch frontier-run).
 # MODE=land_wave: legacy autoloop.sh + land_wave.py continuous dispatch.
 #
@@ -20,16 +20,6 @@ BATCH_SIZE="${FRONTIER_BATCH_SIZE:-4}"
 start=$(date +%s)
 now() { date +%H:%M; }
 
-spawn_claude() { # name model labels co-author
-  pgrep -f "nfltr worker --name $1 " >/dev/null && return
-  echo "[$(now)] respawn $1"
-  nohup "$NF" worker --name "$1" --api-key "$KEY" --flavor claude-code --labels "$3" \
-    --execution-roles implementer,verifier,reducer --max-tasks 4 --per-task-worktree \
-    --heartbeat-interval 15s \
-    --mcp-command "nfltr claude-mcp --model $2 --reasoning-effort medium --permission-mode bypassPermissions --co-author \"$4\"" \
-    > "$LOGD/$1.log" 2>&1 &
-}
-
 spawn_cursor() { # name
   pgrep -f "nfltr worker --name $1 " >/dev/null && return
   echo "[$(now)] respawn $1"
@@ -43,19 +33,16 @@ spawn_cursor() { # name
 
 spawn_integrator() {
   pgrep -f "nfltr worker --name local-integrator " >/dev/null && return
-  echo "[$(now)] respawn local-integrator"
-  nohup "$NF" worker --name local-integrator --api-key "$KEY" --flavor claude-code \
-    --labels "role=integrator,flavor=local-bash,tier=light" \
+  echo "[$(now)] respawn local-integrator (cursor)"
+  nohup "$NF" worker --name local-integrator --api-key "$KEY" --flavor cursor \
+    --labels "role=integrator,flavor=cursor,tier=light" \
     --execution-roles integrator --max-tasks 1 \
     --heartbeat-interval 15s \
-    --mcp-command "nfltr claude-mcp --model claude-haiku-4-5 --reasoning-effort low --permission-mode bypassPermissions --co-author \"Local Integrator\"" \
+    --mcp-command "nfltr cursor-mcp --cursor-command cursor-agent --model composer-2.5 --git-code-result --max-verifier-turns 5" \
     > "$LOGD/local-integrator.log" 2>&1 &
 }
 
 fleet_up() {
-  spawn_claude claude-sonnet-0 claude-sonnet-4-6 model=sonnet,tier=heavy,flavor=claude-code "Claude Sonnet 4.6"
-  spawn_claude claude-sonnet-1 claude-sonnet-4-6 model=sonnet,tier=heavy,flavor=claude-code "Claude Sonnet 4.6"
-  spawn_claude claude-haiku-0 claude-haiku-4-5 model=haiku,tier=light,flavor=claude-code "Claude Haiku 4.5"
   spawn_cursor native-actor-0
   spawn_cursor native-actor-1
   spawn_cursor native-actor-2
@@ -93,7 +80,7 @@ frontier_driver_up() {
   fi
   local rem=$(( BUDGET - ($(date +%s) - start) ))
   echo "[$(now)] frontier-run start: pending=$pending batch=$BATCH_SIZE (remaining ${rem}s)"
-  echo "===== $(date) supervise.sh starting frontier-run (pending=$pending) =====" \
+  echo "===== $(date) supervise.sh starting frontier-run (cursor-only, pending=$pending) =====" \
     >> "$REPO_ROOT/out/frontier-run.log"
   (
     cd "$REPO_ROOT" || exit 2
@@ -114,7 +101,7 @@ autoloop_up() {
 }
 
 last=$(landed); stall=0
-echo "[$(now)] supervisor start (mode=$MODE): landed=$last budget=${BUDGET}s"
+echo "[$(now)] supervisor start (mode=$MODE, cursor-only): landed=$last budget=${BUDGET}s"
 
 while [ $(( $(date +%s) - start )) -lt "$BUDGET" ]; do
   fleet_up

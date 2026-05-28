@@ -11,8 +11,8 @@ BUDGET="${FRONTIER_BUDGET:-4h}"
 BATCH_SIZE="${FRONTIER_BATCH_SIZE:-4}"
 CONCURRENCY="${FRONTIER_CONCURRENCY:-4}"
 
-# Override with env or edit after `nfltr orch workers` if agent prefix changes.
-IMPL_WORKERS="${ZIGRUN_IMPL_WORKERS:-agent-b147cc87.claude-sonnet-0,agent-b147cc87.claude-sonnet-1,agent-b147cc87.claude-haiku-0,agent-b147cc87.native-actor-0,agent-b147cc87.native-actor-1,agent-b147cc87.native-actor-2}"
+# Cursor implementers only (no claude-code workers).
+IMPL_WORKERS="${ZIGRUN_IMPL_WORKERS:-agent-b147cc87.native-actor-0,agent-b147cc87.native-actor-1,agent-b147cc87.native-actor-2}"
 INTEGRATOR_WORKER="${ZIGRUN_INTEGRATOR_WORKER:-agent-b147cc87.local-integrator}"
 
 if [ -f "${HOME}/.nfltr_new_key" ]; then
