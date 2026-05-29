@@ -13,7 +13,7 @@ REPO_ROOT="$(cd .. && pwd)"
 NF=/Users/b/.local/bin/nfltr
 KEY=rpc_eb308b4f651879bde55a79de2acc1371916176bffdd1745d61dd8586997760a0831d79c9a288b96c46fad9441ddfa55c
 LOGD=../out/fleet; mkdir -p "$LOGD"
-CHECK=120
+CHECK=300
 BUDGET="${SUP_BUDGET:-14400}"
 MODE="${MODE:-frontier}"
 # FLEET=mixed (default): 4 cursor composer + 1 claude sonnet + 1 claude haiku.
@@ -167,11 +167,17 @@ while [ $(( $(date +%s) - start )) -lt "$BUDGET" ]; do
     stall=0
   else
     stall=$((stall + 1))
-    echo "[$(now)] no new land (landed=$cur, stall streak $stall/3)"
+    echo "[$(now)] no new land (landed=$cur, stall streak $stall/6)"
   fi
-  if [ "$stall" -ge 3 ]; then
-    rekick
-    stall=0
+  if [ "$stall" -ge 6 ]; then
+    # Only rekick when no tasks are actively running — avoid killing mid-impl workers.
+    active=$("$NF" orch list --active 2>/dev/null | awk 'NR>1' | wc -l | tr -d ' ')
+    if [ "${active:-0}" -gt 0 ]; then
+      echo "[$(now)] stall $stall but $active task(s) active — waiting (not rekicking)"
+    else
+      rekick
+      stall=0
+    fi
   fi
   sleep "$CHECK"
 done
