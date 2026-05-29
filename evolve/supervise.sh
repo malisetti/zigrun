@@ -2,8 +2,10 @@
 # Long-running PROGRESS supervisor for the zigrun self-driving loop.
 # Operators start THIS script only — they do not implement waves (see OPERATOR_BOUNDARY.md).
 #
-# MODE=frontier (default): six cursor implementers (max-tasks=1 each) +
-# cursor local-integrator; restarts frontier_run.sh until budget.
+# MODE=frontier (default): six implementers (max-tasks=1 each) + cursor
+# local-integrator; restarts frontier_run.sh until budget. FLEET=mixed
+# (default) = 4 cursor composer + 1 claude sonnet + 1 claude haiku;
+# FLEET=cursor = legacy 6x cursor.
 # MODE=land_wave: legacy autoloop.sh + land_wave.py continuous dispatch.
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 2          # zigrun/
@@ -14,7 +16,16 @@ LOGD=../out/fleet; mkdir -p "$LOGD"
 CHECK=120
 BUDGET="${SUP_BUDGET:-14400}"
 MODE="${MODE:-frontier}"
-# One pending wave per cursor worker per batch (fleet size = 6).
+# FLEET=mixed (default): 4 cursor composer + 1 claude sonnet + 1 claude haiku.
+# FLEET=cursor: the legacy 6x cursor-only fleet.
+FLEET="${FLEET:-mixed}"
+FLEET_HOME="${FLEET_HOME:-$HOME/nfltr-fleet}"
+AGENT_PREFIX="${AGENT_PREFIX:-agent-b147cc87}"
+# Workers clone/refresh from origin into their own isolated cwd; export the
+# tokened URL so the impl-objective SETUP block can `git clone "$NFLTR_REPO_URL"`.
+NFLTR_REPO_URL="$(git -C "$REPO_ROOT" config --get remote.origin.url)"
+export NFLTR_REPO_URL
+# One pending wave per implementer per batch (fleet size = 6).
 BATCH_SIZE="${FRONTIER_BATCH_SIZE:-6}"
 start=$(date +%s)
 now() { date +%H:%M; }
@@ -41,13 +52,39 @@ spawn_integrator() {
     > "$LOGD/local-integrator.log" 2>&1 &
 }
 
+spawn_claude() { # name model pretty effort
+  pgrep -f "nfltr worker --name $1 " >/dev/null && return
+  local cwd="$FLEET_HOME/$1"
+  if [ ! -d "$cwd/.git" ]; then
+    echo "[$(now)] $1: no clone at $cwd — provisioning"
+    git clone -q "$NFLTR_REPO_URL" "$cwd" || { echo "[$(now)] $1: clone FAILED"; return; }
+  fi
+  echo "[$(now)] respawn $1 (claude $2)"
+  nohup "$NF" worker --name "$1" --api-key "$KEY" --flavor claude \
+    --labels "model=$2,tier=heavy,flavor=claude" \
+    --execution-roles implementer,verifier,reducer --max-tasks 1 \
+    --heartbeat-interval 15s \
+    --mcp-command "nfltr claude-mcp --cwd $cwd --model $2 --reasoning-effort $4 --co-author \"Claude $3\" --git-code-result" \
+    > "$LOGD/$1.log" 2>&1 &
+}
+
 fleet_up() {
-  spawn_cursor native-actor-0
-  spawn_cursor native-actor-1
-  spawn_cursor native-actor-2
-  spawn_cursor native-actor-3
-  spawn_cursor native-actor-4
-  spawn_cursor native-actor-5
+  if [ "$FLEET" = "cursor" ]; then
+    spawn_cursor native-actor-0
+    spawn_cursor native-actor-1
+    spawn_cursor native-actor-2
+    spawn_cursor native-actor-3
+    spawn_cursor native-actor-4
+    spawn_cursor native-actor-5
+  else
+    # mixed: 4 cursor composer + 1 claude sonnet + 1 claude haiku
+    spawn_cursor native-actor-0
+    spawn_cursor native-actor-1
+    spawn_cursor native-actor-2
+    spawn_cursor native-actor-3
+    spawn_claude claude-sonnet-0 claude-sonnet-4-6 "Sonnet 4.6" high
+    spawn_claude claude-haiku-0 claude-haiku-4-5-20251001 "Haiku 4.5" medium
+  fi
   if [ "$MODE" = "frontier" ]; then
     spawn_integrator
   fi
@@ -57,6 +94,7 @@ rekick() {
   echo "[$(now)] PROGRESS STALLED — re-kicking fleet (kill + prune + respawn)"
   pkill -9 -f "nfltr worker --name" 2>/dev/null
   pkill -9 -f "cursor-agent.* agent" 2>/dev/null
+  pkill -9 -f "nfltr claude-mcp" 2>/dev/null
   if [ "$MODE" = "frontier" ]; then
     pkill -9 -f "orch frontier-run" 2>/dev/null
     pkill -9 -f "evolve/frontier_run.sh" 2>/dev/null
@@ -81,12 +119,21 @@ frontier_driver_up() {
     return
   fi
   local rem=$(( BUDGET - ($(date +%s) - start) ))
-  echo "[$(now)] frontier-run start: pending=$pending batch=$BATCH_SIZE fleet=6 (remaining ${rem}s)"
-  echo "===== $(date) supervise.sh starting frontier_run (6x cursor, pending=$pending) =====" \
+  local impl_workers
+  if [ "$FLEET" = "cursor" ]; then
+    impl_workers="${AGENT_PREFIX}.native-actor-0,${AGENT_PREFIX}.native-actor-1,${AGENT_PREFIX}.native-actor-2,${AGENT_PREFIX}.native-actor-3,${AGENT_PREFIX}.native-actor-4,${AGENT_PREFIX}.native-actor-5"
+  else
+    impl_workers="${AGENT_PREFIX}.native-actor-0,${AGENT_PREFIX}.native-actor-1,${AGENT_PREFIX}.native-actor-2,${AGENT_PREFIX}.native-actor-3,${AGENT_PREFIX}.claude-sonnet-0,${AGENT_PREFIX}.claude-haiku-0"
+  fi
+  echo "[$(now)] frontier-run start: pending=$pending batch=$BATCH_SIZE fleet=$FLEET (remaining ${rem}s)"
+  echo "===== $(date) supervise.sh starting frontier_run (fleet=$FLEET, pending=$pending) =====" \
     >> "$REPO_ROOT/out/frontier-run.log"
+  echo "  impl_workers=$impl_workers" >> "$REPO_ROOT/out/frontier-run.log"
   (
     cd "$REPO_ROOT" || exit 2
     export REPO_ROOT
+    export NFLTR_REPO_URL
+    export ZIGRUN_IMPL_WORKERS="$impl_workers"
     export FRONTIER_BATCH_SIZE="$BATCH_SIZE"
     export FRONTIER_CONCURRENCY="$BATCH_SIZE"
     export FRONTIER_BUDGET_SEC="$rem"
@@ -104,7 +151,7 @@ autoloop_up() {
 }
 
 last=$(landed); stall=0
-echo "[$(now)] supervisor start (mode=$MODE, cursor x6): landed=$last budget=${BUDGET}s"
+echo "[$(now)] supervisor start (mode=$MODE, fleet=$FLEET): landed=$last budget=${BUDGET}s"
 
 while [ $(( $(date +%s) - start )) -lt "$BUDGET" ]; do
   fleet_up
