@@ -46,7 +46,7 @@ durable state — stop and resume any time.
 
 ## North star (hello world — frontier-run prioritizes these first)
 - [x] helloworld | oracle/helloworld.zig | NORTH STAR: `@import("std")` + `std.debug.print("Hello, world!\n", .{{}})` — DIFFERENTIAL GREEN vs real zig (landed on main)
-- [ ] print | oracle/pending/print.zig | ladder: single `std.debug.print` line (same I/O path as helloworld)
+- [x] print | oracle/print.zig | ladder: single `std.debug.print` line (same I/O path as helloworld) (landed via orch integrator vs real zig)
 
 ## Frontier (pending — each is real Zig that zigrun must learn to match)
 - [ ] bitwise | oracle/pending/bitwise.zig | self-discovered atomic gap (real zig=35)
