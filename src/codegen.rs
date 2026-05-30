@@ -1596,14 +1596,15 @@ fn emit_stmt(
                 .get(array)
                 .cloned()
                 .ok_or_else(|| format!("unknown array variable {array}"))?;
-            // Determine the underlying array type and whether we're iterating via a pointer
-            let (len, elem_ty, via_ptr) = match &arr_ty {
-                Type::Array { len, elem } => (*len, elem.as_ref().clone(), false),
+            // Determine the iterable's length expression, element type, and storage access.
+            let (len_expr, elem_ty, via_ptr, via_slice) = match &arr_ty {
+                Type::Array { len, elem } => (len.to_string(), elem.as_ref().clone(), false, false),
                 Type::Pointer(inner) => match inner.as_ref() {
-                    Type::Array { len, elem } => (*len, elem.as_ref().clone(), true),
+                    Type::Array { len, elem } => (len.to_string(), elem.as_ref().clone(), true, false),
                     _ => return Err(format!("for-loop expected array or pointer-to-array, found {arr_ty:?}")),
                 },
-                other => return Err(format!("for-loop expected array type, found {other:?}")),
+                Type::Slice { elem, .. } => (format!("({array}).len"), elem.as_ref().clone(), false, true),
+                other => return Err(format!("for-loop expected array or slice type, found {other:?}")),
             };
             let cap = capture.as_deref().unwrap_or("_zig_for_x");
             // Use idx_capture as loop variable if provided, else a private name
@@ -1620,7 +1621,7 @@ fn emit_stmt(
                 loop_break_labels.push((zig_label.clone(), c_label.clone()));
                 c_label
             });
-            let _ = writeln!(out, "for (size_t {idx} = 0; {idx} < {len}; {idx}++) {{");
+            let _ = writeln!(out, "for (size_t {idx} = 0; {idx} < {len_expr}; {idx}++) {{");
 
             // Build the capture declaration
             let cap_decl = if *ptr_capture {
@@ -1637,7 +1638,9 @@ fn emit_stmt(
                     }
                     _ => {
                         // Primitive element; `cell = &array[idx]`
-                        if via_ptr {
+                        if via_slice {
+                            format!("{} *{cap} = &({array}).ptr[{idx}]", c_type(&elem_ty))
+                        } else if via_ptr {
                             // array is already a pointer; &ptr[idx]
                             format!("{} *{cap} = &{array}[{idx}]", c_type(&elem_ty))
                         } else {
@@ -1649,6 +1652,7 @@ fn emit_stmt(
                 // Value capture (original behaviour)
                 match &elem_ty {
                     Type::Array { .. } => format!("{} *{cap} = {array}[{idx}]", c_array_base(&elem_ty)),
+                    _ if via_slice => format!("{} {cap} = ({array}).ptr[{idx}]", c_type(&elem_ty)),
                     _ => format!("{} {cap} = {array}[{idx}]", c_type(&elem_ty)),
                 }
             };
