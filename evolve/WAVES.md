@@ -60,6 +60,7 @@ durable state — stop and resume any time.
 - [x] optional_s3 | oracle/optional_s3.zig | ladder step for 'optional' (real zig=35) (landed via orch integrator vs real zig)
 - [x] taggedunion_s4 | oracle/taggedunion_s4.zig | ladder step for 'taggedunion' (real zig=56) (landed via orch integrator vs real zig)
 - [x] structmethod_s4 | oracle/structmethod_s4.zig | ladder step for 'structmethod' (real zig=8) (landed via orch integrator vs real zig)
+- [x] switchrange_s4 | oracle/switchrange_s4.zig | ladder step for 'switchrange' (real zig=60) (landed via orch integrator vs real zig)
 
 ## Frontier (pending — each is real Zig that zigrun must learn to match)
 - [ ] bitwise | oracle/pending/bitwise.zig | self-discovered atomic gap (real zig=35)
@@ -78,7 +79,6 @@ durable state — stop and resume any time.
 - [ ] packedstruct_s3 | oracle/pending/packedstruct_s3.zig | ladder step for 'packedstruct' (real zig=50)
 - [ ] packedstruct_s2 | oracle/pending/packedstruct_s2.zig | ladder step for 'packedstruct' (real zig=8)
 - [ ] switchrange_s5 | oracle/pending/switchrange_s5.zig | ladder step for 'switchrange' (real zig=46)
-- [ ] switchrange_s4 | oracle/pending/switchrange_s4.zig | ladder step for 'switchrange' (real zig=60)
 - [ ] multidim_s5 | oracle/pending/multidim_s5.zig | ladder step for 'multidim' (real zig=72)
 - [ ] multidim_s4 | oracle/pending/multidim_s4.zig | ladder step for 'multidim' (real zig=36)
 - [ ] errorunion_s4 | oracle/pending/errorunion_s4.zig | ladder step for 'errorunion' (real zig=99)
