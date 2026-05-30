@@ -7,6 +7,8 @@ pub enum Type {
     Bool,
     Int(IntType),
     Array { len: usize, elem: Box<Type> },
+    /// `[]const T` or `[]T` — fat pointer (ptr + len).
+    Slice { const_: bool, elem: Box<Type> },
     Enum(String),
     Struct(String),
     Union(String),
@@ -32,6 +34,7 @@ impl Type {
             Type::Bool => None,
             Type::Int(t) => Some(*t),
             Type::Array { elem, .. } => elem.int_type(),
+            Type::Slice { elem, .. } => elem.int_type(),
             Type::Enum(_) => None,
             Type::Struct(_) => None,
             Type::Union(_) => None,
@@ -84,7 +87,18 @@ impl Type {
 
     pub fn index_result_type(&self) -> Option<Type> {
         match self {
-            Type::Array { elem, .. } => Some((**elem).clone()),
+            Type::Array { elem, .. } | Type::Slice { elem, .. } => Some((**elem).clone()),
+            _ => None,
+        }
+    }
+
+    pub fn is_slice(&self) -> bool {
+        matches!(self, Type::Slice { .. })
+    }
+
+    pub fn slice_elem(&self) -> Option<Type> {
+        match self {
+            Type::Slice { elem, .. } => Some((**elem).clone()),
             _ => None,
         }
     }
@@ -427,6 +441,8 @@ pub enum Expr {
     IntFromEnum(Box<Expr>),
     /// `ptr.*` — pointer dereference as an rvalue
     Deref(Box<Expr>),
+    /// `&expr` — address-of (arrays coerce to slices at use sites)
+    AddrOf(Box<Expr>),
     Orelse {
         left: Box<Expr>,
         right: Box<Expr>,
