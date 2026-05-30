@@ -4,7 +4,7 @@ does **not** write this code — **you** do. Your output is gated by real Zig.
 SETUP (do this FIRST, before anything else): your working directory must be a clean
 checkout of this repo at origin/main on a fresh branch `zigrun-${item_id}`.
 - If `git rev-parse --git-dir` succeeds (the repo is already here):
-    `git fetch origin --prune && git checkout -B zigrun-${item_id} origin/main && git reset --hard origin/main && git clean -fd`
+    `git remote get-url origin >/dev/null 2>&1 || git remote add origin "$NFLTR_REPO_URL"; git fetch origin --prune && git checkout -B zigrun-${item_id} origin/main && git reset --hard origin/main && git clean -fd`
 - Otherwise (the directory is empty):
     `git clone "$NFLTR_REPO_URL" . && git checkout -B zigrun-${item_id} origin/main`
 Do NOT proceed until `zigrun/src/*.rs` and `zigrun/oracle/diff.sh` are present in your tree.
