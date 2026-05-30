@@ -373,6 +373,11 @@ fn collect_optionals_in_expr(expr: &Expr, add: &mut dyn FnMut(&Type)) {
             collect_optionals_in_expr(base, add);
             collect_optionals_in_expr(index, add);
         }
+        Expr::SliceRange { base, start, end } => {
+            collect_optionals_in_expr(base, add);
+            collect_optionals_in_expr(start, add);
+            collect_optionals_in_expr(end, add);
+        }
         Expr::StructLiteral { fields, .. } => {
             for (_, e) in fields {
                 collect_optionals_in_expr(e, add);
@@ -520,6 +525,11 @@ fn collect_error_unions_in_expr(expr: &Expr, add: &mut dyn FnMut(&Type)) {
         Expr::Index { base, index } => {
             collect_error_unions_in_expr(base, add);
             collect_error_unions_in_expr(index, add);
+        }
+        Expr::SliceRange { base, start, end } => {
+            collect_error_unions_in_expr(base, add);
+            collect_error_unions_in_expr(start, add);
+            collect_error_unions_in_expr(end, add);
         }
         Expr::StructLiteral { fields, .. } => {
             for (_, e) in fields {
@@ -743,6 +753,11 @@ fn collect_slices_in_expr(expr: &Expr, add: &mut dyn FnMut(&Type)) {
         Expr::Index { base, index } => {
             collect_slices_in_expr(base, add);
             collect_slices_in_expr(index, add);
+        }
+        Expr::SliceRange { base, start, end } => {
+            collect_slices_in_expr(base, add);
+            collect_slices_in_expr(start, add);
+            collect_slices_in_expr(end, add);
         }
         Expr::StructLiteral { fields, .. } => {
             for (_, e) in fields {
@@ -1054,6 +1069,20 @@ fn expr_type(expr: &Expr, env: &HashMap<String, Type>, func_returns: &HashMap<St
             }
         }
         Expr::Index { base, .. } => indexed_lvalue_type(base, env, func_returns),
+        Expr::SliceRange { base, .. } => {
+            let base_ty = expr_type(base, env, func_returns);
+            match base_ty {
+                Type::Slice { .. } => base_ty,
+                Type::Array { elem, .. } => Type::Slice {
+                    const_: false,
+                    elem,
+                },
+                _ => Type::Slice {
+                    const_: false,
+                    elem: Box::new(Type::Int(IntType::U8)),
+                },
+            }
+        }
         Expr::StructLiteral { struct_name, .. } => Type::Struct(struct_name.clone()),
         Expr::UnionLiteral { union_name, .. } => Type::Union(
             union_name.clone().unwrap_or_else(|| "Shape".to_string()),
@@ -2191,6 +2220,49 @@ fn emit_expr(
             } else {
                 format!("{base_s}[{idx_s}]")
             }
+        }
+        Expr::SliceRange { base, start, end } => {
+            let base_ty = expr_type(base, env, func_returns);
+            let slice_ty = expected
+                .filter(|t| matches!(t, Type::Slice { .. }))
+                .cloned()
+                .or_else(|| match base_ty.clone() {
+                    Type::Slice { .. } => Some(base_ty.clone()),
+                    Type::Array { elem, .. } => Some(Type::Slice {
+                        const_: false,
+                        elem,
+                    }),
+                    _ => None,
+                })
+                .ok_or_else(|| "slice range requires slice type context".to_string())?;
+            let base_s = emit_expr(base, env, None, func_returns, fn_return_type, temp_id)?;
+            let start_s = emit_expr(
+                start,
+                env,
+                Some(&Type::Int(IntType::U32)),
+                func_returns,
+                fn_return_type,
+                temp_id,
+            )?;
+            let end_s = emit_expr(
+                end,
+                env,
+                Some(&Type::Int(IntType::U32)),
+                func_returns,
+                fn_return_type,
+                temp_id,
+            )?;
+            let ptr = if base_ty.is_slice() {
+                format!("({base_s}).ptr + ({start_s})")
+            } else {
+                format!("({base_s}) + ({start_s})")
+            };
+            format!(
+                "({}){{ .ptr = {ptr}, .len = (size_t)(({}) - ({})) }}",
+                c_slice_name(&slice_ty),
+                end_s,
+                start_s
+            )
         }
         Expr::AddrOf(inner) => {
             let inner_ty = expr_type(inner, env, func_returns);
