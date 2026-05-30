@@ -363,6 +363,7 @@ pub enum Expr {
     Int(i64),
     StringLit(String),
     Bool(bool),
+    Null,
     /// `std.debug.print(fmt, .{{}})` lowered to fprintf(stderr, …).
     DebugPrint { format: String },
     Undefined,
