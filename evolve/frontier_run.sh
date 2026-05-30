@@ -10,6 +10,12 @@ NF="${NFLTR:-$REPO_ROOT/out/nfltr}"
 BUDGET_SEC="${FRONTIER_BUDGET_SEC:-18000}"
 BATCH_SIZE="${FRONTIER_BATCH_SIZE:-3}"
 CONCURRENCY="${FRONTIER_CONCURRENCY:-3}"
+SCHEDULER="${FRONTIER_SCHEDULER:-parallel}"
+IMPL_WINDOW="${FRONTIER_IMPL_WINDOW:-$CONCURRENCY}"
+IMPL_READY_AFTER="${FRONTIER_IMPL_READY_AFTER:-30s}"
+IMPL_READY_POLL="${FRONTIER_IMPL_READY_POLL:-15s}"
+DEFAULT_IMPL_READY_COMMAND='git fetch -q origin +refs/heads/main:refs/remotes/origin/main +refs/heads/zigrun-${item_id}:refs/remotes/origin/zigrun-${item_id} && git merge-base --is-ancestor refs/remotes/origin/main refs/remotes/origin/zigrun-${item_id}'
+IMPL_READY_COMMAND="${FRONTIER_IMPL_READY_COMMAND:-$DEFAULT_IMPL_READY_COMMAND}"
 IMPL_WORKERS="${ZIGRUN_IMPL_WORKERS:-agent-b147cc87.native-actor-0,agent-b147cc87.native-actor-1,agent-b147cc87.native-actor-2,agent-b147cc87.native-actor-3,agent-b147cc87.native-actor-4,agent-b147cc87.native-actor-5}"
 INTEGRATOR_WORKER="${ZIGRUN_INTEGRATOR_WORKER:-agent-b147cc87.local-integrator}"
 
@@ -23,6 +29,11 @@ FRONTIER_FLAGS=(
   --impl-objective @zigrun/evolve/impl-objective.template.md
   --gate-command 'bash zigrun/evolve/gate_one.sh ${item_id}'
   --integrate-command 'LAND_ONE_WAVE_ONLY=1 bash zigrun/evolve/land_one.sh ${item_id}'
+  --scheduler "$SCHEDULER"
+  --impl-window "$IMPL_WINDOW"
+  --impl-ready-command "$IMPL_READY_COMMAND"
+  --impl-ready-after "$IMPL_READY_AFTER"
+  --impl-ready-poll "$IMPL_READY_POLL"
   --impl-workers "$IMPL_WORKERS"
   --integrator-worker "$INTEGRATOR_WORKER"
   --batch-size "$BATCH_SIZE"
