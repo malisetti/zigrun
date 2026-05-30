@@ -145,18 +145,30 @@ git add zigrun/oracle/
 
 # --- Re-verify on the merged tree (real zig is truth) ----------------------
 
-echo "land_one[$WAVE_ID]: rebuilding zigrun + running full differential suite"
+echo "land_one[$WAVE_ID]: rebuilding zigrun + running differential verify"
 ( cd zigrun && cargo build --quiet ) || {
   echo "land_one: cargo build failed after merge — rolling back" >&2
   git reset --hard "$pre_head"
+  restore_land_self
   exit 1
 }
 
-if ! bash zigrun/oracle/diff.sh; then
-  echo "land_one: differential suite RED after merge — rolling back" >&2
+if ! ( cd zigrun && bash oracle/diff.sh "${WAVE_ID}" ); then
+  echo "land_one: wave ${WAVE_ID} differential RED after merge — rolling back" >&2
   git reset --hard "$pre_head"
+  restore_land_self
   ( cd zigrun && cargo build --quiet ) || true
   exit 1
+fi
+
+if [ "${LAND_ONE_WAVE_ONLY:-}" != "1" ]; then
+  if ! ( cd zigrun && bash oracle/diff.sh ); then
+    echo "land_one: full differential suite RED after merge — rolling back" >&2
+    git reset --hard "$pre_head"
+    restore_land_self
+    ( cd zigrun && cargo build --quiet ) || true
+    exit 1
+  fi
 fi
 
 # --- Flip WAVES.md [ ] → [x] and bump FEATURES.md coverage ----------------
