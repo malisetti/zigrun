@@ -10,7 +10,8 @@
 #   oracle/check.sh                 # run the full suite
 #   oracle/check.sh add vars        # run only a wave's subset (oracle-gated slices)
 set -uo pipefail
-cd "$(dirname "$0")/.." || exit 2
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$script_dir/.." || exit 2
 
 if ! cargo build --quiet 2>/dev/null; then
   echo "BUILD FAILED"

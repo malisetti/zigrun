@@ -12,10 +12,11 @@
 #   oracle/diff.sh --update [names] # refresh oracle/<name>.exit FROM real zig
 #                                   #   (so the zig-free check.sh cache = zig truth)
 set -uo pipefail
-cd "$(dirname "$0")/.." || exit 2
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$script_dir/.." || exit 2
 
 # Self-provision ground truth: the oracle installs its own zig if needed.
-ZIG="$(bash "$(dirname "$0")/ensure_zig.sh")" || {
+ZIG="$(bash "$script_dir/ensure_zig.sh")" || {
   echo "diff: could not provision real zig"
   exit 2
 }
