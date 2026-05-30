@@ -53,6 +53,7 @@ durable state — stop and resume any time.
 - [x] errorset_s1 | oracle/errorset_s1.zig | ladder step for 'errorset' (real zig=42) (landed via orch integrator vs real zig)
 - [x] switchrange_s3 | oracle/switchrange_s3.zig | ladder step for 'switchrange' (real zig=150) (landed via orch integrator vs real zig)
 - [x] multidim_s3 | oracle/multidim_s3.zig | ladder step for 'multidim' (real zig=100) (landed via orch integrator vs real zig)
+- [x] errorset_s3 | oracle/errorset_s3.zig | ladder step for 'errorset' (real zig=70) (landed via orch integrator vs real zig)
 
 ## Frontier (pending — each is real Zig that zigrun must learn to match)
 - [ ] bitwise | oracle/pending/bitwise.zig | self-discovered atomic gap (real zig=35)
@@ -80,7 +81,6 @@ durable state — stop and resume any time.
 - [ ] errorunion_s1 | oracle/pending/errorunion_s1.zig | ladder step for 'errorunion' (real zig=50)
 - [ ] errorset_s5 | oracle/pending/errorset_s5.zig | ladder step for 'errorset' (real zig=49)
 - [ ] errorset_s4 | oracle/pending/errorset_s4.zig | ladder step for 'errorset' (real zig=11)
-- [ ] errorset_s3 | oracle/pending/errorset_s3.zig | ladder step for 'errorset' (real zig=70)
 - [ ] slice_s5 | oracle/pending/slice_s5.zig | ladder step for 'slice' (real zig=24)
 - [ ] slice_s4 | oracle/pending/slice_s4.zig | ladder step for 'slice' (real zig=100)
 - [ ] slice_s3 | oracle/pending/slice_s3.zig | ladder step for 'slice' (real zig=33)
