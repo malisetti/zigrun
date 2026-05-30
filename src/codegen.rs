@@ -1982,6 +1982,33 @@ fn emit_expr(
                     )?
                 )
             } else {
+                if let Some(Type::Optional(inner)) = expected {
+                    let opt = c_optional_name(inner);
+                    let ct = c_type(inner);
+                    let value = format!(
+                        "({} {} {})",
+                        emit_expr(
+                            left,
+                            env,
+                            Some(inner),
+                            func_returns,
+                            fn_return_type,
+                            temp_id,
+                        )?,
+                        c_op(*op),
+                        emit_expr(
+                            right,
+                            env,
+                            Some(inner),
+                            func_returns,
+                            fn_return_type,
+                            temp_id,
+                        )?
+                    );
+                    return Ok(format!(
+                        "({opt}){{ .is_null = false, .value = ({ct})({value}) }}"
+                    ));
+                }
                 let ty = combine_types(
                     expr_type(left, env, func_returns),
                     expr_type(right, env, func_returns),
