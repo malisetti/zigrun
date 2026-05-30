@@ -880,13 +880,22 @@ impl Parser {
             None
         };
 
-        let err_union = match self.infer_expr_type_local(&cond) {
-            Type::ErrorUnion { err_set, payload } => Some((err_set, (*payload).clone())),
+        let cond_ty = self.infer_expr_type_local(&cond);
+        let err_union = match &cond_ty {
+            Type::ErrorUnion { err_set, payload } => Some((err_set, payload.as_ref().clone())),
+            _ => None,
+        };
+        let optional_payload = match &cond_ty {
+            Type::Optional(inner) => Some(inner.as_ref().clone()),
             _ => None,
         };
 
-        let saved_ok = if let (Some(cap), Some((_, payload))) = (&ok_capture, &err_union) {
-            Some((cap.clone(), self.locals.insert(cap.clone(), payload.clone())))
+        let saved_ok = if let Some(cap) = &ok_capture {
+            let payload = err_union
+                .as_ref()
+                .map(|(_, payload)| payload.clone())
+                .or_else(|| optional_payload.clone());
+            payload.map(|payload| (cap.clone(), self.locals.insert(cap.clone(), payload)))
         } else {
             None
         };
