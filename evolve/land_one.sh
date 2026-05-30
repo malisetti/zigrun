@@ -30,7 +30,15 @@ WAVE_ID="$1"
 
 # Pin to the repo root regardless of caller's cwd (workers may invoke from
 # their own work_dir).
-REPO="$(cd "$(dirname "$0")/../.." && pwd)"
+OPERATOR_REPO="$(cd "$(dirname "$0")/../.." && pwd)"
+REPO="$OPERATOR_REPO"
+LAND_WORKTREE=""
+cleanup_land_worktree() {
+  if [ -n "$LAND_WORKTREE" ]; then
+    git -C "$OPERATOR_REPO" worktree remove -f "$LAND_WORKTREE" 2>/dev/null || true
+  fi
+}
+
 cd "$REPO"
 
 # --- Preflight: clean main, wave is pending, branch is fetched -------------
@@ -42,9 +50,12 @@ if [ "$current_branch" != "main" ]; then
 fi
 
 if [ -n "$(git status --porcelain -uno)" ]; then
-  echo "land_one: working tree dirty (tracked files) — aborting to protect uncommitted work" >&2
-  git status --short -uno >&2
-  exit 2
+  LAND_WORKTREE="$(mktemp -d "${TMPDIR:-/tmp}/zigrun-land.XXXXXX")"
+  echo "land_one: operator tree has local edits — using disposable worktree $LAND_WORKTREE"
+  git worktree add --detach -f "$LAND_WORKTREE" HEAD
+  trap 'restore_land_self; cleanup_land_worktree' EXIT
+  REPO="$LAND_WORKTREE"
+  cd "$REPO"
 fi
 
 if ! grep -qE "^- \[ \] ${WAVE_ID} \|" zigrun/evolve/WAVES.md; then
@@ -193,6 +204,12 @@ for attempt in 1 2 3 4 5 6; do
     server_sha="$(git ls-remote origin main | awk '{print $1}')"
     if [ "$server_sha" = "$target_sha" ]; then
       echo "land_one[$WAVE_ID]: LANDED — origin/main now at $target_sha"
+      if [ -n "$LAND_WORKTREE" ]; then
+        git -C "$OPERATOR_REPO" fetch origin main
+        git -C "$OPERATOR_REPO" checkout main 2>/dev/null || true
+        git -C "$OPERATOR_REPO" reset --hard origin/main
+        echo "land_one[$WAVE_ID]: synced operator checkout at $OPERATOR_REPO"
+      fi
       exit 0
     fi
   fi
