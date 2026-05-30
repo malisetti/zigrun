@@ -65,7 +65,9 @@ fn emit_field_access(
 ) -> Result<String, String> {
     let base_ty = expr_type(base, env, func_returns);
     let base_s = emit_expr(base, env, None, func_returns, fn_return_type, temp_id)?;
-    if base_ty.is_pointer() {
+    if base_ty.is_slice() {
+        Ok(format!("({base_s}).{field}"))
+    } else if base_ty.is_pointer() {
         Ok(format!("({base_s})->{field}"))
     } else {
         Ok(format!("({base_s}).{field}"))
@@ -98,6 +100,12 @@ pub fn emit_c(program: &Program) -> Result<String, String> {
     let mut emitted_optionals: HashSet<String> = HashSet::new();
     for ty in collect_optional_types(program) {
         emit_optional_struct_def(&mut out, &ty, &mut emitted_optionals)?;
+        out.push('\n');
+    }
+
+    let mut emitted_slices: HashSet<String> = HashSet::new();
+    for ty in collect_slice_types(program) {
+        emit_slice_struct_def(&mut out, &ty, &mut emitted_slices)?;
         out.push('\n');
     }
 
@@ -372,7 +380,9 @@ fn collect_optionals_in_expr(expr: &Expr, add: &mut dyn FnMut(&Type)) {
         }
         Expr::UnionLiteral { value: Some(v), .. } => collect_optionals_in_expr(v, add),
         Expr::FieldAccess { base, .. } => collect_optionals_in_expr(base, add),
-        Expr::IntFromEnum(inner) | Expr::Deref(inner) => collect_optionals_in_expr(inner, add),
+        Expr::IntFromEnum(inner) | Expr::Deref(inner) | Expr::AddrOf(inner) => {
+            collect_optionals_in_expr(inner, add);
+        }
         Expr::Int(_)
         | Expr::Bool(_)
         | Expr::StringLit(_)
@@ -518,7 +528,9 @@ fn collect_error_unions_in_expr(expr: &Expr, add: &mut dyn FnMut(&Type)) {
         Expr::UnionLiteral { value: Some(v), .. } => collect_error_unions_in_expr(v, add),
         Expr::UnionLiteral { value: None, .. } => {}
         Expr::FieldAccess { base, .. } => collect_error_unions_in_expr(base, add),
-        Expr::IntFromEnum(inner) | Expr::Deref(inner) => collect_error_unions_in_expr(inner, add),
+        Expr::IntFromEnum(inner) | Expr::Deref(inner) | Expr::AddrOf(inner) => {
+            collect_error_unions_in_expr(inner, add);
+        }
         Expr::Int(_)
         | Expr::Bool(_)
         | Expr::StringLit(_)
@@ -603,6 +615,211 @@ fn emit_optional_struct_def(
     Ok(())
 }
 
+fn collect_slice_types(program: &Program) -> Vec<Type> {
+    let mut out = Vec::new();
+    let mut add = |ty: &Type| {
+        if let Type::Slice { .. } = ty {
+            if !out.iter().any(|t| t == ty) {
+                out.push(ty.clone());
+            }
+        }
+    };
+    for f in &program.functions {
+        add(&f.return_type);
+        for (_, ty) in &f.params {
+            add(ty);
+        }
+        collect_slices_in_stmts(&f.body, &mut add);
+    }
+    out
+}
+
+fn collect_slices_in_stmts(stmts: &[Stmt], add: &mut dyn FnMut(&Type)) {
+    for s in stmts {
+        match s {
+            Stmt::Let { ty, value, .. } => {
+                add(ty);
+                collect_slices_in_expr(value, add);
+            }
+            Stmt::Assign { value, .. } => collect_slices_in_expr(value, add),
+            Stmt::Return(e) => collect_slices_in_expr(e, add),
+            Stmt::If {
+                cond,
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                collect_slices_in_expr(cond, add);
+                collect_slices_in_stmts(then_branch, add);
+                if let Some(eb) = else_branch {
+                    collect_slices_in_stmts(eb, add);
+                }
+            }
+            Stmt::While { cond, cont, body } => {
+                collect_slices_in_expr(cond, add);
+                if let Some(c) = cont {
+                    collect_slices_in_expr(c, add);
+                }
+                collect_slices_in_stmts(body, add);
+            }
+            Stmt::ForRange { start, end, body, .. } => {
+                collect_slices_in_expr(start, add);
+                collect_slices_in_expr(end, add);
+                collect_slices_in_stmts(body, add);
+            }
+            Stmt::ForArray { body, .. } => collect_slices_in_stmts(body, add),
+            Stmt::Break { .. } | Stmt::Continue => {}
+            Stmt::Expr(e) => collect_slices_in_expr(e, add),
+            Stmt::Switch { scrutinee, arms } => {
+                collect_slices_in_expr(scrutinee, add);
+                for arm in arms {
+                    collect_slices_in_stmts(&arm.body, add);
+                }
+            }
+        }
+    }
+}
+
+fn collect_slices_in_expr(expr: &Expr, add: &mut dyn FnMut(&Type)) {
+    match expr {
+        Expr::BinOp { left, right, .. } => {
+            collect_slices_in_expr(left, add);
+            collect_slices_in_expr(right, add);
+        }
+        Expr::Call { args, .. } => {
+            for a in args {
+                collect_slices_in_expr(a, add);
+            }
+        }
+        Expr::Try(e) => collect_slices_in_expr(e, add),
+        Expr::Catch { expr, fallback, .. } => {
+            collect_slices_in_expr(expr, add);
+            collect_slices_in_expr(fallback, add);
+        }
+        Expr::CatchReturn { expr, ret_val, .. } => {
+            collect_slices_in_expr(expr, add);
+            collect_slices_in_expr(ret_val, add);
+        }
+        Expr::If {
+            cond,
+            then_expr,
+            else_expr,
+        } => {
+            collect_slices_in_expr(cond, add);
+            collect_slices_in_expr(then_expr, add);
+            collect_slices_in_expr(else_expr, add);
+        }
+        Expr::Switch {
+            scrutinee,
+            arms,
+            default,
+        } => {
+            collect_slices_in_expr(scrutinee, add);
+            for arm in arms {
+                collect_slices_in_expr(&arm.expr, add);
+            }
+            if let Some(d) = default {
+                collect_slices_in_expr(d, add);
+            }
+        }
+        Expr::IntCast { expr, .. }
+        | Expr::BitCast { expr, .. }
+        | Expr::UnaryNeg(expr)
+        | Expr::UnaryNot(expr)
+        | Expr::AddrOf(expr) => {
+            collect_slices_in_expr(expr, add);
+        }
+        Expr::Mod { left, right } | Expr::Rem { left, right } => {
+            collect_slices_in_expr(left, add);
+            collect_slices_in_expr(right, add);
+        }
+        Expr::ArrayLiteral { elems, .. } => {
+            for e in elems {
+                collect_slices_in_expr(e, add);
+            }
+        }
+        Expr::Index { base, index } => {
+            collect_slices_in_expr(base, add);
+            collect_slices_in_expr(index, add);
+        }
+        Expr::StructLiteral { fields, .. } => {
+            for (_, e) in fields {
+                collect_slices_in_expr(e, add);
+            }
+        }
+        Expr::UnionLiteral { value: Some(v), .. } => collect_slices_in_expr(v, add),
+        Expr::FieldAccess { base, .. } => collect_slices_in_expr(base, add),
+        Expr::IntFromEnum(inner) | Expr::Deref(inner) => collect_slices_in_expr(inner, add),
+        Expr::Orelse { left, right } => {
+            collect_slices_in_expr(left, add);
+            collect_slices_in_expr(right, add);
+        }
+        Expr::Int(_)
+        | Expr::Bool(_)
+        | Expr::StringLit(_)
+        | Expr::DebugPrint { .. }
+        | Expr::Undefined
+        | Expr::Var(_)
+        | Expr::EnumLiteral { .. }
+        | Expr::ErrorLiteral { .. }
+        | Expr::UnionLiteral { value: None, .. }
+        | Expr::EmptyInit => {}
+    }
+}
+
+fn c_slice_name(ty: &Type) -> String {
+    let Type::Slice { const_, elem } = ty else {
+        return "Slice".to_string();
+    };
+    format!(
+        "Slice_{}_{}",
+        if *const_ { "const" } else { "mut" },
+        c_type(elem).replace(' ', "_")
+    )
+}
+
+fn c_slice_ptr_type(ty: &Type) -> String {
+    let Type::Slice { const_, elem } = ty else {
+        return "void *".to_string();
+    };
+    if *const_ {
+        format!("{} const *", c_type(elem))
+    } else {
+        format!("{} *", c_type(elem))
+    }
+}
+
+fn emit_slice_struct_def(
+    out: &mut String,
+    ty: &Type,
+    emitted: &mut HashSet<String>,
+) -> Result<(), String> {
+    let Type::Slice { .. } = ty else {
+        return Ok(());
+    };
+    let name = c_slice_name(ty);
+    if !emitted.insert(name.clone()) {
+        return Ok(());
+    }
+    let ptr_ct = c_slice_ptr_type(ty);
+    let _ = writeln!(
+        out,
+        "typedef struct {{ {ptr_ct} ptr; size_t len; }} {name};"
+    );
+    Ok(())
+}
+
+fn array_to_slice_expr(
+    arr_expr: &str,
+    len: usize,
+    slice_ty: &Type,
+) -> String {
+    format!(
+        "({}){{ .ptr = {arr_expr}, .len = {len} }}",
+        c_slice_name(slice_ty)
+    )
+}
+
 fn emit_enum_def(out: &mut String, e: &EnumDef) -> Result<(), String> {
     let _ = writeln!(out, "typedef enum {{");
     let mut next: i64 = 0;
@@ -634,6 +851,7 @@ fn c_type(ty: &Type) -> String {
         Type::Int(IntType::I32) => "int32_t".to_string(),
         Type::Int(IntType::I64) => "int64_t".to_string(),
         Type::Array { .. } => "uint8_t".to_string(),
+        Type::Slice { .. } => c_slice_name(ty),
         Type::Enum(name) => name.clone(),
         Type::Struct(name) => name.clone(),
         Type::Union(name) => name.clone(),
@@ -841,6 +1059,7 @@ fn expr_type(expr: &Expr, env: &HashMap<String, Type>, func_returns: &HashMap<St
         Expr::Deref(inner) => expr_type(inner, env, func_returns)
             .pointee()
             .unwrap_or(Type::Int(IntType::U8)),
+        Expr::AddrOf(inner) => Type::Pointer(Box::new(expr_type(inner, env, func_returns))),
         Expr::Orelse { left, right } => expr_type(left, env, func_returns)
             .optional_inner()
             .unwrap_or_else(|| expr_type(right, env, func_returns)),
@@ -855,6 +1074,9 @@ fn field_expr_type(base: &Expr, field: &str, env: &HashMap<String, Type>) -> Typ
         Expr::StructLiteral { struct_name, .. } => Some(Type::Struct(struct_name.clone())),
         _ => None,
     };
+    if base_ty.as_ref().is_some_and(|t| t.is_slice()) && field == "len" {
+        return Type::Int(IntType::U64);
+    }
     if let Some(Type::Union(ref union_name)) = base_ty {
         if let Some(udef) = lookup_union(union_name) {
             if let Ok(ty) = union_variant_payload_type(&udef, field) {
@@ -1942,17 +2164,33 @@ fn emit_expr(
             format!("{{ {} }}", parts?.join(", "))
         }
         Expr::Index { base, index } => {
+            let base_ty = expr_type(base, env, func_returns);
+            let base_s = emit_expr(base, env, None, func_returns, fn_return_type, temp_id)?;
+            let idx_s = emit_expr(
+                index,
+                env,
+                Some(&Type::Int(IntType::U32)),
+                func_returns,
+                fn_return_type,
+                temp_id,
+            )?;
+            if base_ty.is_slice() {
+                format!("({base_s}).ptr[{idx_s}]")
+            } else {
+                format!("{base_s}[{idx_s}]")
+            }
+        }
+        Expr::AddrOf(inner) => {
+            let inner_ty = expr_type(inner, env, func_returns);
+            if let Some(slice_ty @ Type::Slice { .. }) = expected {
+                if let Type::Array { len, .. } = inner_ty {
+                    let arr_s = emit_expr(inner, env, None, func_returns, fn_return_type, temp_id)?;
+                    return Ok(array_to_slice_expr(&arr_s, len, slice_ty));
+                }
+            }
             format!(
-                "{}[{}]",
-                emit_expr(base, env, None, func_returns, fn_return_type, temp_id)?,
-                emit_expr(
-                    index,
-                    env,
-                    Some(&Type::Int(IntType::U32)),
-                    func_returns,
-                    fn_return_type,
-                    temp_id,
-                )?
+                "&({})",
+                emit_expr(inner, env, None, func_returns, fn_return_type, temp_id)?
             )
         }
         Expr::StructLiteral { struct_name, fields } => {

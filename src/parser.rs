@@ -362,6 +362,17 @@ impl Parser {
         }
         if self.check(&TokenKind::LBracket) {
             self.advance();
+            if self.check(&TokenKind::RBracket) {
+                self.advance();
+                let const_ = if self.check(&TokenKind::Const) {
+                    self.advance();
+                    true
+                } else {
+                    false
+                };
+                let elem = Box::new(self.parse_type()?);
+                return Ok(Type::Slice { const_, elem });
+            }
             let len = match self.peek_kind() {
                 TokenKind::Int(n) => {
                     self.advance();
@@ -1093,6 +1104,11 @@ impl Parser {
             self.advance();
             let operand = self.parse_unary()?;
             return Ok(Expr::UnaryNeg(Box::new(operand)));
+        }
+        if self.check(&TokenKind::Amp) {
+            self.advance();
+            let operand = self.parse_unary()?;
+            return Ok(Expr::AddrOf(Box::new(operand)));
         }
         self.parse_postfix()
     }
@@ -2156,6 +2172,10 @@ fn infer_expr_type(
         }
         Expr::UnaryNeg(inner) => infer_expr_type(inner, enums, structs, unions, locals, functions),
         Expr::UnaryNot(_) => Type::Bool,
+        Expr::AddrOf(inner) => {
+            let inner_ty = infer_expr_type(inner, enums, structs, unions, locals, functions);
+            Type::Pointer(Box::new(inner_ty))
+        }
         Expr::ArrayLiteral { elems, annotated } => {
             if let Some((len_opt, elem)) = annotated {
                 Type::Array {
