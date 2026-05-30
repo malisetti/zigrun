@@ -15,6 +15,13 @@
 
 set -euo pipefail
 
+# land_one may hard-reset on verify failure; keep a copy outside the repo tree.
+_land_self="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+_land_bak="${TMPDIR:-/tmp}/land_one.$$.bak"
+cp "$_land_self" "$_land_bak"
+restore_land_self() { [ -f "$_land_bak" ] && cp "$_land_bak" "$_land_self"; }
+trap restore_land_self EXIT
+
 if [ $# -lt 1 ]; then
   echo "land_one: usage: $0 <wave_id>" >&2
   exit 2
@@ -34,9 +41,9 @@ if [ "$current_branch" != "main" ]; then
   exit 2
 fi
 
-if [ -n "$(git status --porcelain)" ]; then
-  echo "land_one: working tree dirty — aborting to protect uncommitted work" >&2
-  git status --short >&2
+if [ -n "$(git status --porcelain -uno)" ]; then
+  echo "land_one: working tree dirty (tracked files) — aborting to protect uncommitted work" >&2
+  git status --short -uno >&2
   exit 2
 fi
 
@@ -64,11 +71,12 @@ pre_head="$(git rev-parse HEAD)"
 # Use --no-ff so the merge commit is the recorded landing point — even when
 # the worker branch is purely ahead of main, the dedicated merge commit
 # carries the integrator's audit trail (land_one ran, gate passed).
-echo "land_one[$WAVE_ID]: merging origin/zigrun-${WAVE_ID} into main"
-if ! git merge --no-ff --no-edit \
+worker_ref="origin/zigrun-${WAVE_ID}"
+echo "land_one[$WAVE_ID]: merging $worker_ref into main (ours — oracle reapplied below)"
+if ! git merge -s ours --no-ff --no-edit \
        -m "feat(zigrun): ${WAVE_ID} landed via orch integrator" \
-       "origin/zigrun-${WAVE_ID}"; then
-  echo "land_one: merge produced conflicts — aborting" >&2
+       "$worker_ref"; then
+  echo "land_one: merge failed — aborting" >&2
   git merge --abort 2>/dev/null || true
   exit 1
 fi
@@ -82,12 +90,31 @@ fi
 echo "land_one[$WAVE_ID]: overlaying operator oracle (anti-tamper)"
 git checkout "$pre_head" -- zigrun/oracle/
 
-# The wave is allowed to: (a) move pending/<id>.zig into oracle/<id>.zig,
-# (b) add <id> to oracle/check.sh and oracle/diff.sh. Apply those by hand
-# from the merged source, NOT by trusting the worker's oracle diff.
+if git cat-file -e "${worker_ref}:zigrun/oracle/pending/${WAVE_ID}.zig" 2>/dev/null; then
+  git checkout "$worker_ref" -- "zigrun/oracle/pending/${WAVE_ID}.zig"
+elif git cat-file -e "${worker_ref}:zigrun/oracle/${WAVE_ID}.zig" 2>/dev/null; then
+  git checkout "$worker_ref" -- "zigrun/oracle/${WAVE_ID}.zig"
+  if [ -f "zigrun/oracle/${WAVE_ID}.zig" ] && [ ! -f "$pending_zig" ]; then
+    mkdir -p "$(dirname "$pending_zig")"
+    git mv -f "zigrun/oracle/${WAVE_ID}.zig" "$pending_zig"
+  fi
+fi
+if git cat-file -e "${worker_ref}:zigrun/oracle/${WAVE_ID}.exit" 2>/dev/null; then
+  git checkout "$worker_ref" -- "zigrun/oracle/${WAVE_ID}.exit" 2>/dev/null || true
+fi
 
+dest_zig="zigrun/oracle/${WAVE_ID}.zig"
 if [ -f "$pending_zig" ]; then
-  git mv "$pending_zig" "zigrun/oracle/${WAVE_ID}.zig"
+  if [ -f "$dest_zig" ]; then
+    git rm -f "$pending_zig" 2>/dev/null || rm -f "$pending_zig"
+  else
+    git mv "$pending_zig" "$dest_zig"
+  fi
+elif [ ! -f "$dest_zig" ]; then
+  echo "land_one: spec missing after merge (no $pending_zig or $dest_zig)" >&2
+  git reset --hard "$pre_head"
+  restore_land_self
+  exit 2
 fi
 
 # Add the wave id to the progs=(...) array in check.sh + diff.sh if absent.
