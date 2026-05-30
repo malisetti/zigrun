@@ -22,7 +22,7 @@ FRONTIER_FLAGS=(
   --skip-missing-under zigrun
   --impl-objective @zigrun/evolve/impl-objective.template.md
   --gate-command 'bash zigrun/evolve/gate_one.sh ${item_id}'
-  --integrate-command 'bash -lc '"'"'set -euo pipefail; cd "'"$REPO_ROOT"'"; git checkout main; git pull --ff-only origin main; bash zigrun/evolve/land_one.sh ${item_id}'"'"
+  --integrate-command 'LAND_ONE_WAVE_ONLY=1 bash zigrun/evolve/land_one.sh ${item_id}'
   --impl-workers "$IMPL_WORKERS"
   --integrator-worker "$INTEGRATOR_WORKER"
   --batch-size "$BATCH_SIZE"
@@ -58,7 +58,6 @@ while [ "$(date +%s)" -lt "$deadline" ]; do
   [ "$with_spec" -eq 0 ] && break
 
   echo "frontier_run: batch start (${with_spec} runnable, ${rem}s left)"
-  bash zigrun/evolve/integrate_ready.sh >> "$REPO_ROOT/out/frontier-run.log" 2>&1 || true
   run_batch "$rem" || { echo "frontier_run: batch rc=$? — continuing"; prune_stale_slots; }
   sleep 5
 done
