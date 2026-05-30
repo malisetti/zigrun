@@ -216,19 +216,21 @@ fn union_variant_payload_type(u: &UnionDef, variant: &str) -> Result<Type, Strin
         .ok_or_else(|| format!("unknown union variant {variant:?} for {}", u.name))
 }
 
-fn union_payload_c_type(variants: &[UnionVariant]) -> String {
-    let mut payload = "uint8_t".to_string();
+fn union_payload_decl(variants: &[UnionVariant]) -> String {
+    let mut fields = Vec::new();
     for v in variants {
         if let Some(ty) = &v.payload {
-            if ty.int_type().is_some() {
-                let ct = c_type(ty);
-                if ct.len() > payload.len() || payload == "uint8_t" {
-                    payload = ct;
-                }
-            }
+            fields.push(format!("{} {}", c_type(ty), v.name));
         }
     }
-    payload
+    if fields.is_empty() {
+        fields.push("uint8_t _void".to_string());
+    }
+    format!("union {{ {}; }}", fields.join("; "))
+}
+
+fn union_payload_access(base: &str, variant: &str) -> String {
+    format!("({base}).payload.{variant}")
 }
 
 fn emit_union_def(out: &mut String, u: &UnionDef) -> Result<(), String> {
@@ -240,7 +242,7 @@ fn emit_union_def(out: &mut String, u: &UnionDef) -> Result<(), String> {
         let _ = writeln!(out, "}} {}_tag;", u.name);
     }
     let tag_ty = union_tag_c_type(u);
-    let payload_ty = union_payload_c_type(&u.variants);
+    let payload_ty = union_payload_decl(&u.variants);
     let _ = writeln!(
         out,
         "typedef struct {{ {tag_ty} tag; {payload_ty} payload; }} {};",
@@ -1717,12 +1719,8 @@ fn emit_stmt(
                             let payload_ty =
                                 union_variant_payload_type(&udef, variant)?;
                             let cap_ct = c_type(&payload_ty);
-                            let payload_ct = union_payload_c_type(&udef.variants);
-                            let bind = if cap_ct == payload_ct {
-                                format!("{cap_ct} {cap} = ({scrut_s}).payload")
-                            } else {
-                                format!("{cap_ct} {cap} = ({cap_ct})({scrut_s}).payload")
-                            };
+                            let payload = union_payload_access(&scrut_s, variant);
+                            let bind = format!("{cap_ct} {cap} = {payload}");
                             indent(out, depth + 1);
                             let _ = writeln!(out, "{bind};");
                             arm_env.insert(cap.clone(), payload_ty);
@@ -2356,7 +2354,7 @@ fn emit_expr(
             if let Some(val) = value {
                 let _ = write!(
                     &mut init,
-                    ", .payload = {}",
+                    ", .payload.{variant} = {}",
                     emit_expr(val, env, None, func_returns, fn_return_type, temp_id)?
                 );
             }
@@ -2370,13 +2368,8 @@ fn emit_expr(
             if let Type::Union(union_name) = expr_type(base, env, func_returns) {
                 if let Some(udef) = lookup_union(&union_name) {
                     if udef.variants.iter().any(|v| v.name == *field) {
-                        let payload_ty = union_variant_payload_type(&udef, field)?;
-                        let cap_ct = c_type(&payload_ty);
-                        let payload_ct = union_payload_c_type(&udef.variants);
-                        if cap_ct == payload_ct {
-                            return Ok(format!("({base_s}).payload"));
-                        }
-                        return Ok(format!("(({cap_ct})({base_s}).payload)"));
+                        let _payload_ty = union_variant_payload_type(&udef, field)?;
+                        return Ok(union_payload_access(&base_s, field));
                     }
                 }
             }
@@ -2651,12 +2644,8 @@ fn emit_union_switch(
         if let Some(cap) = capture {
             let payload_ty = union_variant_payload_type(&udef, variant)?;
             let cap_ct = c_type(&payload_ty);
-            let payload_ct = union_payload_c_type(&udef.variants);
-            let bind = if cap_ct == payload_ct {
-                format!("{cap_ct} {cap} = ({s}).payload")
-            } else {
-                format!("{cap_ct} {cap} = ({cap_ct})({s}).payload")
-            };
+            let payload = union_payload_access(s, variant);
+            let bind = format!("{cap_ct} {cap} = {payload}");
             let _ = writeln!(
                 out,
                 "    if (({s}).tag == {tag}) {{ {bind}; _zig_switch_result = {arm_expr}; }}"
