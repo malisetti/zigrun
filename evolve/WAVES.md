@@ -47,6 +47,7 @@ durable state — stop and resume any time.
 ## North star (hello world — frontier-run prioritizes these first)
 - [x] helloworld | oracle/helloworld.zig | NORTH STAR: `@import("std")` + `std.debug.print("Hello, world!\n", .{{}})` — DIFFERENTIAL GREEN vs real zig (landed on main)
 - [x] print | oracle/print.zig | ladder: single `std.debug.print` line (same I/O path as helloworld) (landed via orch integrator vs real zig)
+- [x] packedstruct_s1 | oracle/packedstruct_s1.zig | ladder step for 'packedstruct' (real zig=5) (landed via orch integrator vs real zig)
 
 ## Frontier (pending — each is real Zig that zigrun must learn to match)
 - [ ] bitwise | oracle/pending/bitwise.zig | self-discovered atomic gap (real zig=35)
@@ -66,7 +67,6 @@ durable state — stop and resume any time.
 - [ ] packedstruct_s4 | oracle/pending/packedstruct_s4.zig | ladder step for 'packedstruct' (real zig=9)
 - [ ] packedstruct_s3 | oracle/pending/packedstruct_s3.zig | ladder step for 'packedstruct' (real zig=50)
 - [ ] packedstruct_s2 | oracle/pending/packedstruct_s2.zig | ladder step for 'packedstruct' (real zig=8)
-- [ ] packedstruct_s1 | oracle/pending/packedstruct_s1.zig | ladder step for 'packedstruct' (real zig=5)
 - [ ] switchrange_s5 | oracle/pending/switchrange_s5.zig | ladder step for 'switchrange' (real zig=46)
 - [ ] switchrange_s4 | oracle/pending/switchrange_s4.zig | ladder step for 'switchrange' (real zig=60)
 - [ ] switchrange_s3 | oracle/pending/switchrange_s3.zig | ladder step for 'switchrange' (real zig=150)
