@@ -1865,6 +1865,32 @@ impl Parser {
                         expr: self.parse_expr()?,
                     });
                 }
+            } else if self.check(&TokenKind::Error) && self.check_next(&TokenKind::Dot) {
+                let enum_name = scrutinee_enum.clone().ok_or_else(|| {
+                    "error switch arm requires error-tag scrutinee".to_string()
+                })?;
+                if !enum_name.ends_with("_err") {
+                    return Err(format!(
+                        "error switch arm does not match scrutinee enum {enum_name:?}"
+                    ));
+                }
+                self.advance();
+                self.advance();
+                let variant = self.expect_ident()?;
+                if !self.enum_has_variant(&enum_name, &variant) {
+                    return Err(format!(
+                        "unknown variant {variant:?} for error set {:?}",
+                        enum_name.trim_end_matches("_err")
+                    ));
+                }
+                self.expect(TokenKind::FatArrow)?;
+                arms.push(SwitchArm {
+                    tag: SwitchTag::EnumVariant {
+                        enum_name: enum_name.clone(),
+                        variant,
+                    },
+                    expr: self.parse_expr()?,
+                });
             } else {
                 if scrutinee_enum.is_some() || scrutinee_union.is_some() {
                     return Err("enum/union switch requires `.variant =>` arms".to_string());
@@ -1983,6 +2009,31 @@ impl Parser {
                     return Err(format!(
                         "expected `.variant` or integer switch arm, found {:?}",
                         self.peek_kind()
+                    ));
+                }
+            } else if self.check(&TokenKind::Error) && self.check_next(&TokenKind::Dot) {
+                self.advance();
+                self.advance();
+                let variant = self.expect_ident()?;
+                if let Some(ref enum_name) = scrutinee_enum {
+                    if !enum_name.ends_with("_err") {
+                        return Err(format!(
+                            "error switch arm does not match scrutinee enum {enum_name:?}"
+                        ));
+                    }
+                    if !self.enum_has_variant(enum_name, &variant) {
+                        return Err(format!(
+                            "unknown variant {variant:?} for error set {:?}",
+                            enum_name.trim_end_matches("_err")
+                        ));
+                    }
+                    SwitchTag::EnumVariant {
+                        enum_name: enum_name.clone(),
+                        variant,
+                    }
+                } else {
+                    return Err(format!(
+                        "error variant arm error.{variant} requires error-tag scrutinee"
                     ));
                 }
             } else if self.check(&TokenKind::Else) {
