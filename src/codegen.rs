@@ -385,6 +385,7 @@ fn collect_optionals_in_expr(expr: &Expr, add: &mut dyn FnMut(&Type)) {
         }
         Expr::Int(_)
         | Expr::Bool(_)
+        | Expr::Null
         | Expr::StringLit(_)
         | Expr::DebugPrint { .. }
         | Expr::Undefined
@@ -533,6 +534,7 @@ fn collect_error_unions_in_expr(expr: &Expr, add: &mut dyn FnMut(&Type)) {
         }
         Expr::Int(_)
         | Expr::Bool(_)
+        | Expr::Null
         | Expr::StringLit(_)
         | Expr::DebugPrint { .. }
         | Expr::Undefined
@@ -756,6 +758,7 @@ fn collect_slices_in_expr(expr: &Expr, add: &mut dyn FnMut(&Type)) {
         }
         Expr::Int(_)
         | Expr::Bool(_)
+        | Expr::Null
         | Expr::StringLit(_)
         | Expr::DebugPrint { .. }
         | Expr::Undefined
@@ -976,6 +979,7 @@ fn expr_type(expr: &Expr, env: &HashMap<String, Type>, func_returns: &HashMap<St
     match expr {
         Expr::Int(_) => Type::Int(IntType::U8),
         Expr::Bool(_) => Type::Bool,
+        Expr::Null => Type::Int(IntType::U8),
         Expr::Undefined => Type::Int(IntType::U8),
         Expr::Var(name) => env
             .get(name)
@@ -1804,6 +1808,14 @@ fn emit_expr(
                 format!("({})({})", c_type(ty), n)
             } else {
                 n.to_string()
+            }
+        }
+        Expr::Null => {
+            if let Some(Type::Optional(inner)) = expected {
+                let opt = c_optional_name(inner);
+                format!("({opt}){{ .is_null = true }}")
+            } else {
+                return Err("null requires optional type context".to_string());
             }
         }
         Expr::Bool(v) => {

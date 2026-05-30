@@ -1434,6 +1434,10 @@ impl Parser {
                 self.advance();
                 Ok(Expr::Bool(false))
             }
+            TokenKind::Null => {
+                self.advance();
+                Ok(Expr::Null)
+            }
             TokenKind::Undefined => {
                 self.advance();
                 Ok(Expr::Undefined)
@@ -2099,6 +2103,7 @@ fn infer_expr_type(
     match expr {
         Expr::Int(_) => Type::Int(IntType::U8),
         Expr::Bool(_) => Type::Bool,
+        Expr::Null => Type::Int(IntType::U8),
         Expr::Undefined => Type::Int(IntType::U8),
         Expr::Var(name) => locals
             .get(name)
