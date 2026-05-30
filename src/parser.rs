@@ -35,12 +35,15 @@ pub struct Parser {
     structs: HashMap<String, Vec<(String, Type)>>,
     unions: HashMap<String, Vec<UnionVariant>>,
     functions: HashMap<String, Type>,
+    function_params: HashMap<String, Vec<Type>>,
     locals: HashMap<String, Type>,
     expr_enum_hint: Option<String>,
     expr_union_hint: Option<String>,
     expr_type_hint: Option<Type>,
     struct_methods: HashMap<String, Vec<String>>,
     packed_structs: std::collections::HashSet<String>,
+    anon_structs: Vec<StructDef>,
+    anon_struct_id: usize,
 }
 
 impl Parser {
@@ -54,12 +57,15 @@ impl Parser {
             structs: HashMap::new(),
             unions: HashMap::new(),
             functions: HashMap::new(),
+            function_params: HashMap::new(),
             locals: HashMap::new(),
             expr_enum_hint: None,
             expr_union_hint: None,
             expr_type_hint: None,
             struct_methods: HashMap::new(),
             packed_structs: std::collections::HashSet::new(),
+            anon_structs: Vec::new(),
+            anon_struct_id: 0,
         }
     }
 
@@ -95,10 +101,12 @@ impl Parser {
         if functions.is_empty() {
             return Err("empty program: no functions".to_string());
         }
+        let mut all_structs = self.anon_structs;
+        all_structs.extend(struct_defs);
         Ok(Program {
             enums: enum_defs,
             error_sets: error_set_defs,
-            structs: struct_defs,
+            structs: all_structs,
             unions: union_defs,
             functions,
         })
@@ -301,6 +309,10 @@ impl Parser {
         for (p, ty) in &params {
             self.locals.insert(p.clone(), ty.clone());
         }
+        self.function_params.insert(
+            mangled_name.clone(),
+            params.iter().map(|(_, ty)| ty.clone()).collect(),
+        );
         let body = self.parse_block()?;
         Ok(crate::ast::Function {
             name: mangled_name,
@@ -338,6 +350,10 @@ impl Parser {
         for (p, ty) in &params {
             self.locals.insert(p.clone(), ty.clone());
         }
+        self.function_params.insert(
+            name.clone(),
+            params.iter().map(|(_, ty)| ty.clone()).collect(),
+        );
         let body = self.parse_block()?;
         Ok(Function {
             name,
@@ -359,6 +375,9 @@ impl Parser {
         if self.check(&TokenKind::Void) {
             self.advance();
             return Ok(Type::Void);
+        }
+        if self.check(&TokenKind::Struct) {
+            return self.parse_anonymous_struct_type();
         }
         if self.check(&TokenKind::LBracket) {
             self.advance();
@@ -416,6 +435,36 @@ impl Parser {
             return Ok(Type::Union(name));
         }
         Type::from_name(&name).ok_or_else(|| format!("unsupported type {name:?}"))
+    }
+
+    fn parse_anonymous_struct_type(&mut self) -> Result<Type, String> {
+        self.expect(TokenKind::Struct)?;
+        self.expect(TokenKind::LBrace)?;
+        let name = format!("__zigrun_anon_struct_{}", self.anon_struct_id);
+        self.anon_struct_id += 1;
+        self.structs.insert(name.clone(), Vec::new());
+        let mut fields = Vec::new();
+        while !self.check(&TokenKind::RBrace) && !self.check(&TokenKind::Eof) {
+            let field = self.expect_ident()?;
+            self.expect(TokenKind::Colon)?;
+            let ty = self.parse_type()?;
+            fields.push((field, ty));
+            if self.check(&TokenKind::Comma) {
+                self.advance();
+            }
+        }
+        self.expect(TokenKind::RBrace)?;
+        if fields.is_empty() {
+            return Err("anonymous struct type has no fields".to_string());
+        }
+        self.structs.insert(name.clone(), fields.clone());
+        self.anon_structs.push(StructDef {
+            name: name.clone(),
+            packed: false,
+            fields,
+            methods: Vec::new(),
+        });
+        Ok(Type::Struct(name))
     }
 
     fn parse_block(&mut self) -> Result<Vec<Stmt>, String> {
@@ -715,7 +764,7 @@ impl Parser {
                         let mut args = vec![*base.clone()];
                         if !self.check(&TokenKind::RParen) {
                             loop {
-                                args.push(self.parse_expr()?);
+                                args.push(self.parse_expr_with_type_hint(None)?);
                                 if self.check(&TokenKind::Comma) {
                                     self.advance();
                                 } else {
@@ -968,6 +1017,26 @@ impl Parser {
         self.parse_logical_or()
     }
 
+    fn parse_expr_with_type_hint(&mut self, hint: Option<&Type>) -> Result<Expr, String> {
+        let saved_enum = self.expr_enum_hint.clone();
+        let saved_union = self.expr_union_hint.clone();
+        let saved_type = self.expr_type_hint.clone();
+        if let Some(ty) = hint {
+            self.expr_type_hint = Some(ty.clone());
+            if let Type::Enum(enum_name) = ty {
+                self.expr_enum_hint = Some(enum_name.clone());
+            }
+            if let Type::Union(union_name) = ty {
+                self.expr_union_hint = Some(union_name.clone());
+            }
+        }
+        let parsed = self.parse_expr();
+        self.expr_enum_hint = saved_enum;
+        self.expr_union_hint = saved_union;
+        self.expr_type_hint = saved_type;
+        parsed
+    }
+
     fn parse_logical_or(&mut self) -> Result<Expr, String> {
         let mut left = self.parse_logical_and()?;
         while self.check(&TokenKind::Or) {
@@ -1162,7 +1231,7 @@ impl Parser {
                             let mut args = vec![expr];
                             if !self.check(&TokenKind::RParen) {
                                 loop {
-                                    args.push(self.parse_expr()?);
+                                    args.push(self.parse_expr_with_type_hint(None)?);
                                     if self.check(&TokenKind::Comma) {
                                         self.advance();
                                     } else {
@@ -1339,6 +1408,14 @@ impl Parser {
                 if self.check(&TokenKind::LBrace) {
                     self.advance();
                     if self.check(&TokenKind::Dot) {
+                        if let Some(Type::Struct(struct_name)) = self.expr_type_hint.clone() {
+                            let fields = self.parse_struct_literal_fields()?;
+                            self.expect(TokenKind::RBrace)?;
+                            return Ok(Expr::StructLiteral {
+                                struct_name,
+                                fields,
+                            });
+                        }
                         let union_lit = self.parse_anon_union_literal()?;
                         self.expect(TokenKind::RBrace)?;
                         Ok(union_lit)
@@ -1492,7 +1569,10 @@ impl Parser {
                 if self.check(&TokenKind::LBrace) {
                     if self.structs.contains_key(&name) {
                         self.advance();
+                        let saved = self.expr_type_hint.clone();
+                        self.expr_type_hint = Some(Type::Struct(name.clone()));
                         let fields = self.parse_struct_literal_fields()?;
+                        self.expr_type_hint = saved;
                         self.expect(TokenKind::RBrace)?;
                         Ok(Expr::StructLiteral {
                             struct_name: name,
@@ -1511,7 +1591,13 @@ impl Parser {
                     let mut args = Vec::new();
                     if !self.check(&TokenKind::RParen) {
                         loop {
-                            args.push(self.parse_expr()?);
+                            let arg_idx = args.len();
+                            let hint = self
+                                .function_params
+                                .get(&name)
+                                .and_then(|params| params.get(arg_idx))
+                                .cloned();
+                            args.push(self.parse_expr_with_type_hint(hint.as_ref())?);
                             if self.check(&TokenKind::Comma) {
                                 self.advance();
                             } else {
@@ -1558,40 +1644,43 @@ impl Parser {
     }
 
     fn parse_anon_union_literal(&mut self) -> Result<Expr, String> {
-        let fields = self.parse_struct_literal_fields()?;
-        if fields.len() != 1 {
-            return Err("union literal must have exactly one variant field".to_string());
-        }
-        let (variant, value) = fields.into_iter().next().unwrap();
         let union_name = self.expr_union_hint.clone();
-        Ok(Expr::UnionLiteral {
-            union_name,
-            variant,
-            value: if matches!(value, Expr::EmptyInit) {
-                None
-            } else {
-                Some(Box::new(value))
-            },
-        })
+        self.parse_union_literal_payload(union_name.as_deref())
     }
 
     fn parse_union_literal_fields(&mut self, union_name: &str) -> Result<Expr, String> {
-        let fields = self.parse_struct_literal_fields()?;
-        if fields.len() != 1 {
+        self.parse_union_literal_payload(Some(union_name))
+    }
+
+    fn parse_union_literal_payload(&mut self, union_name: Option<&str>) -> Result<Expr, String> {
+        self.expect(TokenKind::Dot)?;
+        let variant = self.expect_ident()?;
+        self.expect(TokenKind::Assign)?;
+        let payload_ty = union_name
+            .and_then(|name| {
+                self.unions
+                    .get(name)
+                    .and_then(|vs| vs.iter().find(|v| v.name == variant))
+                    .and_then(|v| v.payload.clone())
+            });
+        if let Some(name) = union_name {
+            if !self
+                .unions
+                .get(name)
+                .is_some_and(|vs| vs.iter().any(|v| v.name == variant))
+            {
+                return Err(format!("unknown variant {variant:?} for union {name:?}"));
+            }
+        }
+        let value = self.parse_literal_value(payload_ty.as_ref())?;
+        if self.check(&TokenKind::Comma) {
+            self.advance();
+        }
+        if self.check(&TokenKind::Dot) {
             return Err("union literal must have exactly one variant field".to_string());
         }
-        let (variant, value) = fields.into_iter().next().unwrap();
-        if !self
-            .unions
-            .get(union_name)
-            .is_some_and(|vs| vs.iter().any(|v| v.name == variant))
-        {
-            return Err(format!(
-                "unknown variant {variant:?} for union {union_name:?}"
-            ));
-        }
         Ok(Expr::UnionLiteral {
-            union_name: Some(union_name.to_string()),
+            union_name: union_name.map(str::to_string),
             variant,
             value: if matches!(value, Expr::EmptyInit) {
                 None
@@ -1608,19 +1697,8 @@ impl Parser {
                 self.expect(TokenKind::Dot)?;
                 let field = self.expect_ident()?;
                 self.expect(TokenKind::Assign)?;
-                let value = if self.check(&TokenKind::LBrace) {
-                    let saved = self.pos;
-                    self.advance();
-                    if self.check(&TokenKind::RBrace) {
-                        self.advance();
-                        Expr::EmptyInit
-                    } else {
-                        self.pos = saved;
-                        self.parse_expr()?
-                    }
-                } else {
-                    self.parse_expr()?
-                };
+                let field_hint = self.struct_field_hint(&field);
+                let value = self.parse_literal_value(field_hint.as_ref())?;
                 fields.push((field, value));
                 if self.check(&TokenKind::Comma) {
                     self.advance();
@@ -1630,6 +1708,29 @@ impl Parser {
             }
         }
         Ok(fields)
+    }
+
+    fn struct_field_hint(&self, field: &str) -> Option<Type> {
+        let Type::Struct(struct_name) = self.expr_type_hint.as_ref()? else {
+            return None;
+        };
+        self.structs
+            .get(struct_name)
+            .and_then(|fields| fields.iter().find(|(name, _)| name == field))
+            .map(|(_, ty)| ty.clone())
+    }
+
+    fn parse_literal_value(&mut self, hint: Option<&Type>) -> Result<Expr, String> {
+        if self.check(&TokenKind::LBrace) {
+            let saved = self.pos;
+            self.advance();
+            if self.check(&TokenKind::RBrace) {
+                self.advance();
+                return Ok(Expr::EmptyInit);
+            }
+            self.pos = saved;
+        }
+        self.parse_expr_with_type_hint(hint)
     }
 
     fn parse_array_elems(&mut self) -> Result<Vec<Expr>, String> {
