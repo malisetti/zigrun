@@ -35,7 +35,7 @@ if [ ${#progs[@]} -eq 0 ]; then
   if [ $errors -eq 1 ]; then
     progs=(); for f in oracle/err/*.zig; do progs+=("$(basename "$f" .zig)"); done
   else
-    progs=(add vars ifelse while fn fib bitops forloop switch elseif loopctl inttypes signedints u64wide unaryneg boollogic arraysum arrayidx atmod structfield struct optional recursion arithmetic enum for errors bitwise enums taggedunion_s5 taggedunion_s2 taggedunion_s3 structmethod_s1 structmethod_s3 structmethod_s2 structmethod_s4 structmethod_s5 packedstruct_s3 packedstruct_s2 packedstruct_s4 errorunion_s5 errorunion_s1 errorset_s2 labeledloop switchrange_s5 switchrange_s1 switchrange_s2 multidim_s4 errorunion_s3 errorunion_s2 helloworld print packedstruct_s1 multidim_s1 multidim_s2 errorset_s1 switchrange_s3 multidim_s3 errorset_s3 slice_s2 optional_s2 slice_s3 optional_s3 taggedunion_s4 switchrange_s4 errorunion_s4 errorset_s4)
+    progs=(add vars ifelse while fn fib bitops forloop switch elseif loopctl inttypes signedints u64wide unaryneg boollogic arraysum arrayidx atmod structfield struct optional recursion arithmetic enum for errors bitwise enums taggedunion_s5 taggedunion_s2 taggedunion_s3 structmethod_s1 structmethod_s3 structmethod_s2 structmethod_s4 structmethod_s5 packedstruct_s3 packedstruct_s2 packedstruct_s4 errorunion_s5 errorunion_s1 errorset_s2 labeledloop switchrange_s5 switchrange_s1 switchrange_s2 multidim_s4 errorunion_s3 errorunion_s2 helloworld print packedstruct_s1 multidim_s1 multidim_s2 errorset_s1 switchrange_s3 multidim_s3 errorset_s3 slice_s2 optional_s2 slice_s3 optional_s3 taggedunion_s4 switchrange_s4 errorunion_s4 errorset_s4 slice_s4)
   fi
 fi
 
