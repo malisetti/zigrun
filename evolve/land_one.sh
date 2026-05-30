@@ -92,6 +92,31 @@ if ! git merge -s ours --no-ff --no-edit \
   exit 1
 fi
 
+# The ours merge records ancestry while keeping operator main as the tree.
+# Re-apply only implementation-owned files from the verified worker branch;
+# oracle files are handled by the anti-tamper block below.
+echo "land_one[$WAVE_ID]: applying verified implementation files from $worker_ref"
+while IFS=$'\t' read -r status path extra; do
+  [ -z "${status:-}" ] && continue
+  case "$status" in
+    D*)
+      git rm -f -- "$path" 2>/dev/null || rm -f "$path"
+      ;;
+    R*|C*)
+      old_path="$path"
+      new_path="$extra"
+      if [ -n "$old_path" ] && [ "$old_path" != "$new_path" ]; then
+        git rm -f -- "$old_path" 2>/dev/null || rm -f "$old_path"
+      fi
+      git checkout "$worker_ref" -- "$new_path"
+      ;;
+    *)
+      git checkout "$worker_ref" -- "$path"
+      ;;
+  esac
+done < <(git diff --name-status "$pre_head" "$worker_ref" -- zigrun/src zigrun/Cargo.toml zigrun/Cargo.lock)
+git add zigrun/src zigrun/Cargo.toml zigrun/Cargo.lock 2>/dev/null || true
+
 # --- Anti-tamper: overlay operator's oracle from pre-merge main -----------
 # A malicious or sloppy worker may have edited oracle/diff.sh or oracle/*.zig
 # files to fake green. We discard whatever the merge brought in for oracle/
