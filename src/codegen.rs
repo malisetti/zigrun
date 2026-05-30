@@ -1309,7 +1309,7 @@ fn emit_stmt(
         } => {
             if ok_capture.is_some() || err_capture.is_some() {
                 let cond_ty = expr_type(cond, env, func_returns);
-                if let Type::ErrorUnion { err_set, payload } = cond_ty {
+                if let Type::ErrorUnion { err_set, payload } = cond_ty.clone() {
                     let st = c_error_union_name(&err_set, &payload);
                     let ok = c_error_ok_tag(&err_set);
                     let tmp = next_temp(temp_id);
@@ -1368,8 +1368,62 @@ fn emit_stmt(
                         out.push('}');
                     }
                     out.push('\n');
+                } else if let Type::Optional(inner) = cond_ty {
+                    if err_capture.is_some() {
+                        return Err("optional if does not support else error capture".to_string());
+                    }
+                    let opt = c_optional_name(&inner);
+                    let tmp = next_temp(temp_id);
+                    let cond_code = emit_expr(cond, env, Some(&Type::Optional(inner.clone())), func_returns, return_type, temp_id)?;
+                    let _ = writeln!(out, "{} {} = {};", opt, tmp, cond_code);
+                    let _ = writeln!(out, "if (!{}.is_null) {{", tmp);
+
+                    let mut then_env = env.clone();
+                    if let Some(ok_var) = ok_capture {
+                        let payload_ct = c_type(&inner);
+                        let _ = writeln!(out, "    {} {} = {}.value;", payload_ct, ok_var, tmp);
+                        then_env.insert(ok_var.clone(), (*inner).clone());
+                    }
+
+                    for s in then_branch {
+                        emit_stmt(
+                            out,
+                            s,
+                            depth + 1,
+                            &mut then_env,
+                            return_type,
+                            func_returns,
+                            temp_id,
+                            loop_cont,
+                            loop_break_labels,
+                        )?;
+                    }
+
+                    indent(out, depth);
+                    out.push('}');
+
+                    if let Some(eb) = else_branch {
+                        out.push_str(" else {\n");
+                        let mut else_env = env.clone();
+                        for s in eb {
+                            emit_stmt(
+                                out,
+                                s,
+                                depth + 1,
+                                &mut else_env,
+                                return_type,
+                                func_returns,
+                                temp_id,
+                                loop_cont,
+                                loop_break_labels,
+                            )?;
+                        }
+                        indent(out, depth);
+                        out.push('}');
+                    }
+                    out.push('\n');
                 } else {
-                    return Err("if captures require error union condition".to_string());
+                    return Err("if captures require error union or optional condition".to_string());
                 }
             } else {
                 let _ = writeln!(
