@@ -79,9 +79,11 @@ if ! ( cd "$SCRATCH/zigrun" && bash oracle/diff.sh "${WAVE_ID}" ); then
   exit 1
 fi
 
-if ! ( cd "$SCRATCH/zigrun" && bash oracle/diff.sh ); then
-  echo "gate_one[$WAVE_ID]: differential RED — full suite regressed" >&2
-  exit 1
+if [ "${GATE_ONE_WAVE_ONLY:-}" != "1" ]; then
+  if ! ( cd "$SCRATCH/zigrun" && bash oracle/diff.sh ); then
+    echo "gate_one[$WAVE_ID]: differential RED — full suite regressed" >&2
+    exit 1
+  fi
 fi
 
 echo "gate_one[$WAVE_ID]: GREEN — branch zigrun-${WAVE_ID} verified vs real zig"

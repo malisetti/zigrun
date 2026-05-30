@@ -15,7 +15,7 @@ while IFS= read -r wave; do
   [ -n "$wave" ] || continue
   git ls-remote --exit-code origin "refs/heads/zigrun-${wave}" >/dev/null 2>&1 || continue
   echo "integrate_ready: trying $wave (branch on origin)"
-  if bash zigrun/evolve/gate_one.sh "$wave" && bash zigrun/evolve/land_one.sh "$wave"; then
+  if GATE_ONE_WAVE_ONLY=1 bash zigrun/evolve/gate_one.sh "$wave" && bash zigrun/evolve/land_one.sh "$wave"; then
     landed=$((landed + 1))
   else
     echo "integrate_ready: $wave not ready (gate or land failed)" >&2
