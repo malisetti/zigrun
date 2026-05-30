@@ -1173,11 +1173,22 @@ impl Parser {
                 };
             } else if self.check(&TokenKind::LBracket) {
                 self.advance();
-                let index = self.parse_expr()?;
+                let first = self.parse_expr()?;
+                if self.check(&TokenKind::DotDot) {
+                    self.advance();
+                    let end = self.parse_expr()?;
+                    self.expect(TokenKind::RBracket)?;
+                    expr = Expr::SliceRange {
+                        base: Box::new(expr),
+                        start: Box::new(first),
+                        end: Box::new(end),
+                    };
+                    continue;
+                }
                 self.expect(TokenKind::RBracket)?;
                 expr = Expr::Index {
                     base: Box::new(expr),
-                    index: Box::new(index),
+                    index: Box::new(first),
                 };
             } else {
                 break;
@@ -2203,6 +2214,20 @@ fn infer_expr_type(
         Expr::Index { base, .. } => infer_expr_type(base, enums, structs, unions, locals, functions)
             .index_result_type()
             .unwrap_or(Type::Int(IntType::U8)),
+        Expr::SliceRange { base, .. } => {
+            let base_ty = infer_expr_type(base, enums, structs, unions, locals, functions);
+            match base_ty {
+                Type::Slice { .. } => base_ty,
+                Type::Array { elem, .. } => Type::Slice {
+                    const_: false,
+                    elem,
+                },
+                _ => Type::Slice {
+                    const_: false,
+                    elem: Box::new(Type::Int(IntType::U8)),
+                },
+            }
+        }
         Expr::StructLiteral { struct_name, .. } => Type::Struct(struct_name.clone()),
         Expr::UnionLiteral { union_name, .. } => Type::Union(
             union_name

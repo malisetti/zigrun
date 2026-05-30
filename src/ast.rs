@@ -410,6 +410,11 @@ pub enum Expr {
         base: Box<Expr>,
         index: Box<Expr>,
     },
+    SliceRange {
+        base: Box<Expr>,
+        start: Box<Expr>,
+        end: Box<Expr>,
+    },
     StructLiteral {
         struct_name: String,
         fields: Vec<(String, Expr)>,
