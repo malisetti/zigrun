@@ -66,11 +66,11 @@ durable state — stop and resume any time.
 - [x] slice_s4 | oracle/slice_s4.zig | ladder step for 'slice' (real zig=100) (landed via orch integrator vs real zig)
 - [x] labeledloop | oracle/labeledloop.zig | self-discovered atomic gap (real zig=26) (landed via orch integrator vs real zig)
 - [x] optional_s4 | oracle/optional_s4.zig | ladder step for 'optional' (real zig=59) (landed via orch integrator vs real zig)
+- [x] errorunion | oracle/errorunion.zig | self-discovered atomic gap (real zig=42) (landed via orch integrator vs real zig)
 
 ## Frontier (pending — each is real Zig that zigrun must learn to match)
 - [ ] bitwise | oracle/pending/bitwise.zig | self-discovered atomic gap (real zig=35)
 - [ ] for | oracle/pending/for.zig | self-discovered atomic gap (real zig=39)
-- [ ] errorunion | oracle/pending/errorunion.zig | self-discovered atomic gap (real zig=42)
 - [ ] struct | oracle/pending/struct.zig | self-discovered atomic gap (real zig=42)
 - [ ] errors | oracle/pending/errors.zig | self-discovered atomic gap (real zig=120)
 - [ ] loops | oracle/pending/loops.zig | self-discovered atomic gap (real zig=26)
