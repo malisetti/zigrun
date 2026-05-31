@@ -75,6 +75,7 @@ durable state — stop and resume any time.
 - [x] slice_s5 | oracle/slice_s5.zig | ladder step for 'slice' (real zig=24) (landed via orch integrator vs real zig)
 - [x] optional_s5 | oracle/optional_s5.zig | ladder step for 'optional' (real zig=15) (landed via orch integrator vs real zig)
 - [x] error_unions | oracle/error_unions.zig | self-DISCOVERED gap (planner-generated, real zig=85, zigrun diverged) (landed via orch integrator vs real zig)
+- [x] tagged_unions | oracle/tagged_unions.zig | self-DISCOVERED gap (planner-generated, real zig=55, zigrun diverged) (landed via orch integrator vs real zig)
 
 ## Frontier (pending — each is real Zig that zigrun must learn to match)
 - [ ] bitwise | oracle/pending/bitwise.zig | self-discovered atomic gap (real zig=35)
@@ -92,7 +93,6 @@ durable state — stop and resume any time.
 - [ ] errorunion_s1 | oracle/pending/errorunion_s1.zig | ladder step for 'errorunion' (real zig=50)
 - [ ] slice_s1 | oracle/pending/slice_s1.zig | ladder step for 'slice' (real zig=4)
 - [ ] optional_s1 | oracle/pending/optional_s1.zig | ladder step for 'optional' (real zig=42)
-- [ ] tagged_unions | oracle/pending/tagged_unions.zig | self-DISCOVERED gap (planner-generated, real zig=55, zigrun diverged)
 - [ ] switch_ranges | oracle/pending/switch_ranges.zig | self-DISCOVERED gap (planner-generated, real zig=71, zigrun diverged)
 - [ ] optionals | oracle/pending/optionals.zig | self-DISCOVERED gap (planner-generated, real zig=105, zigrun diverged)
 - [ ] comptime | oracle/pending/comptime.zig | self-DISCOVERED gap (planner-generated, real zig=110, zigrun diverged)
