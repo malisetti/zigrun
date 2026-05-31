@@ -67,7 +67,7 @@ def nfltr(*args, env=None, timeout=90):
     return sh(["/Users/b/.local/bin/nfltr", *args], env=env or api_env(), timeout=timeout)
 
 
-# ---- ledger (same shape as pkg/orchestrator OrchestrationLedger) -------------
+# ---- ledger (same shape as internal/application/orchestrator OrchestrationLedger) -------------
 def ledger_load():
     if LEDGER.exists():
         try:
