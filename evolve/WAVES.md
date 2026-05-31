@@ -84,6 +84,7 @@ durable state — stop and resume any time.
 - [x] multidim_arrays | oracle/multidim_arrays.zig | self-DISCOVERED gap (planner-generated, real zig=45, zigrun diverged) (landed via orch integrator vs real zig)
 - [x] error_union | oracle/error_union.zig | self-DISCOVERED gap (planner-generated, real zig=105, zigrun diverged) (landed via orch integrator vs real zig)
 - [x] slice_s1 | oracle/slice_s1.zig | ladder step for 'slice' (real zig=4) (landed via orch integrator vs real zig)
+- [x] optional_s1 | oracle/optional_s1.zig | ladder step for 'optional' (real zig=42) (landed via orch integrator vs real zig)
 
 ## Frontier (pending — each is real Zig that zigrun must learn to match)
 - [ ] bitwise | oracle/pending/bitwise.zig | self-discovered atomic gap (real zig=35)
@@ -99,7 +100,6 @@ durable state — stop and resume any time.
 - [ ] switchrange_s5 | oracle/pending/switchrange_s5.zig | ladder step for 'switchrange' (real zig=46)
 - [ ] multidim_s4 | oracle/pending/multidim_s4.zig | ladder step for 'multidim' (real zig=36)
 - [ ] errorunion_s1 | oracle/pending/errorunion_s1.zig | ladder step for 'errorunion' (real zig=50)
-- [ ] optional_s1 | oracle/pending/optional_s1.zig | ladder step for 'optional' (real zig=42)
 ## How a wave lands
 1. `evolve.sh` picks the next `[ ]`, ensures zig, runs the differential gate → RED.
 2. Dispatch the objective to a worker (inner LLM writes the compiler code) OR implement directly.

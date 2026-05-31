@@ -477,6 +477,8 @@ pub enum Expr {
     IntFromEnum(Box<Expr>),
     /// `ptr.*` — pointer dereference as an rvalue
     Deref(Box<Expr>),
+    /// `opt.?` — optional payload unwrap as an rvalue
+    OptionalUnwrap(Box<Expr>),
     /// `&expr` — address-of (arrays coerce to slices at use sites)
     AddrOf(Box<Expr>),
     Orelse {
