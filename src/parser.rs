@@ -1106,7 +1106,28 @@ impl Parser {
             _ => return Ok(left),
         };
         self.advance();
+        let right_hint = infer_expr_type(
+            &left,
+            &self.enums,
+            &self.structs,
+            &self.unions,
+            &self.locals,
+            &self.functions,
+        );
+        let saved_enum = self.expr_enum_hint.clone();
+        let saved_union = self.expr_union_hint.clone();
+        let saved_type = self.expr_type_hint.clone();
+        self.expr_type_hint = Some(right_hint.clone());
+        if let Type::Enum(enum_name) = &right_hint {
+            self.expr_enum_hint = Some(enum_name.clone());
+        }
+        if let Type::Union(union_name) = &right_hint {
+            self.expr_union_hint = Some(union_name.clone());
+        }
         let right = self.parse_shift()?;
+        self.expr_enum_hint = saved_enum;
+        self.expr_union_hint = saved_union;
+        self.expr_type_hint = saved_type;
         Ok(Expr::BinOp {
             op,
             left: Box::new(left),

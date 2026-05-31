@@ -81,6 +81,23 @@ pub fn emit_c(program: &Program) -> Result<String, String> {
     let mut out = String::new();
     out.push_str("#include <stdint.h>\n#include <stdbool.h>\n#include <stddef.h>\n#include <stdio.h>\n\n");
 
+    let enum_defs: HashMap<String, EnumDef> = program
+        .enums
+        .iter()
+        .map(|e| (e.name.clone(), e.clone()))
+        .collect();
+    let union_defs: HashMap<String, UnionDef> = program
+        .unions
+        .iter()
+        .map(|u| (u.name.clone(), u.clone()))
+        .collect();
+    let struct_defs: HashMap<String, StructDef> = program
+        .structs
+        .iter()
+        .map(|s| (s.name.clone(), s.clone()))
+        .collect();
+    with_type_defs(&enum_defs, &union_defs, &struct_defs, || {});
+
     for e in &program.enums {
         emit_enum_def(&mut out, e)?;
         out.push('\n');
@@ -130,22 +147,6 @@ pub fn emit_c(program: &Program) -> Result<String, String> {
         .map(|f| (f.name.clone(), f.return_type.clone()))
         .collect();
 
-    let enum_defs: HashMap<String, EnumDef> = program
-        .enums
-        .iter()
-        .map(|e| (e.name.clone(), e.clone()))
-        .collect();
-    let union_defs: HashMap<String, UnionDef> = program
-        .unions
-        .iter()
-        .map(|u| (u.name.clone(), u.clone()))
-        .collect();
-    let struct_defs: HashMap<String, StructDef> = program
-        .structs
-        .iter()
-        .map(|s| (s.name.clone(), s.clone()))
-        .collect();
-
     let func_params: HashMap<String, Vec<Type>> = program
         .functions
         .iter()
@@ -181,9 +182,14 @@ fn emit_struct_def(out: &mut String, s: &StructDef) -> Result<(), String> {
     let _ = writeln!(out, "typedef struct {{");
     for (field, ty) in &s.fields {
         if s.packed {
-            if let Type::Int(it) = ty {
-                let bits = it.bits();
-                let _ = writeln!(out, "    {} {} : {};", c_type(ty), field, bits);
+            if let Some(bits) = packed_field_bits(ty) {
+                let _ = writeln!(
+                    out,
+                    "    {} {} : {};",
+                    packed_field_c_type(ty),
+                    field,
+                    bits
+                );
                 continue;
             }
         }
@@ -859,7 +865,10 @@ fn c_enum_variant(enum_name: &str, variant: &str) -> String {
 fn c_type(ty: &Type) -> String {
     match ty {
         Type::Bool => "bool".to_string(),
-        Type::Int(IntType::U2) | Type::Int(IntType::U3) | Type::Int(IntType::U4) => {
+        Type::Int(IntType::U2)
+        | Type::Int(IntType::U3)
+        | Type::Int(IntType::U4)
+        | Type::Int(IntType::U5) => {
             "uint8_t".to_string()
         }
         Type::Int(IntType::U8) => "uint8_t".to_string(),
@@ -2499,7 +2508,7 @@ fn packed_struct_backing_int(s: &StructDef) -> IntType {
     let bits: u32 = s
         .fields
         .iter()
-        .filter_map(|(_, ty)| ty.int_type().map(|t| t.bits()))
+        .filter_map(|(_, ty)| packed_field_bits(ty))
         .sum();
     let bytes = (bits + 7) / 8;
     match bytes {
@@ -2508,6 +2517,31 @@ fn packed_struct_backing_int(s: &StructDef) -> IntType {
         4 => IntType::U32,
         8 => IntType::U64,
         _ => IntType::U8,
+    }
+}
+
+fn packed_field_bits(ty: &Type) -> Option<u32> {
+    match ty {
+        Type::Bool => Some(1),
+        Type::Int(it) => Some(it.bits()),
+        Type::Enum(name) => Some(
+            lookup_enum(name)
+                .and_then(|e| e.backing)
+                .unwrap_or(IntType::U8)
+                .bits(),
+        ),
+        _ => None,
+    }
+}
+
+fn packed_field_c_type(ty: &Type) -> String {
+    match ty {
+        Type::Bool => "unsigned int".to_string(),
+        Type::Enum(name) => lookup_enum(name)
+            .and_then(|e| e.backing)
+            .map(c_int_type)
+            .unwrap_or_else(|| "uint8_t".to_string()),
+        _ => c_type(ty),
     }
 }
 
