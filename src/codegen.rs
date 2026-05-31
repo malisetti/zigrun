@@ -899,6 +899,15 @@ fn c_var_decl(name: &str, ty: &Type) -> String {
     }
 }
 
+fn c_ptr_to_array_elem_decl(name: &str, array_ty: &Type) -> String {
+    match array_ty {
+        Type::Array { elem, .. } => {
+            format!("{} (*{name}){}", c_array_base(array_ty), c_array_suffix(elem))
+        }
+        other => format!("{} *{name}", c_type(other)),
+    }
+}
+
 fn c_array_base(ty: &Type) -> String {
     match ty {
         Type::Array { elem, .. } => match elem.as_ref() {
@@ -1598,7 +1607,7 @@ fn emit_stmt(
             ptr_capture,
             idx_capture,
             array,
-            ptr_iter,
+            ptr_iter: _,
             body,
         } => {
             let arr_ty = env
@@ -1637,13 +1646,12 @@ fn emit_stmt(
                 // Pointer capture: `|*elem|` or `|*elem, idx|`
                 match &elem_ty {
                     Type::Array { .. } => {
-                        // elem is itself an array; pointer to it
-                        if *ptr_iter || via_ptr {
-                            // for (&grid, ...) — grid[idx] decays to pointer in C
-                            format!("{} *{cap} = {array}[{idx}]", c_array_base(&elem_ty))
+                        let init = if via_slice {
+                            format!("({array}).ptr[{idx}]")
                         } else {
-                            format!("{} *{cap} = {array}[{idx}]", c_array_base(&elem_ty))
-                        }
+                            format!("{array}[{idx}]")
+                        };
+                        format!("{} = {init}", c_ptr_to_array_elem_decl(cap, &elem_ty))
                     }
                     _ => {
                         // Primitive element; `cell = &array[idx]`
@@ -1660,7 +1668,14 @@ fn emit_stmt(
             } else {
                 // Value capture (original behaviour)
                 match &elem_ty {
-                    Type::Array { .. } => format!("{} *{cap} = {array}[{idx}]", c_array_base(&elem_ty)),
+                    Type::Array { .. } => {
+                        let init = if via_slice {
+                            format!("({array}).ptr[{idx}]")
+                        } else {
+                            format!("{array}[{idx}]")
+                        };
+                        format!("{} = {init}", c_ptr_to_array_elem_decl(cap, &elem_ty))
+                    }
                     _ if via_slice => format!("{} {cap} = ({array}).ptr[{idx}]", c_type(&elem_ty)),
                     _ => format!("{} {cap} = {array}[{idx}]", c_type(&elem_ty)),
                 }
