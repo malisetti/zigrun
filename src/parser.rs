@@ -36,6 +36,8 @@ pub struct Parser {
     unions: HashMap<String, Vec<UnionVariant>>,
     functions: HashMap<String, Type>,
     function_params: HashMap<String, Vec<Type>>,
+    comptime_functions: HashMap<String, Function>,
+    comptime_ints: HashMap<String, i64>,
     globals: HashMap<String, Type>,
     locals: HashMap<String, Type>,
     expr_enum_hint: Option<String>,
@@ -59,6 +61,8 @@ impl Parser {
             unions: HashMap::new(),
             functions: HashMap::new(),
             function_params: HashMap::new(),
+            comptime_functions: HashMap::new(),
+            comptime_ints: HashMap::new(),
             globals: HashMap::new(),
             locals: HashMap::new(),
             expr_enum_hint: None,
@@ -89,6 +93,7 @@ impl Parser {
                     TopLevelDecl::ErrorSet(e) => error_set_defs.push(e),
                     TopLevelDecl::Struct(s) => {
                         for m in &s.methods {
+                            self.comptime_functions.insert(m.name.clone(), m.clone());
                             functions.push(m.clone());
                         }
                         struct_defs.push(s);
@@ -102,6 +107,7 @@ impl Parser {
             } else {
                 let f = self.parse_function()?;
                 self.functions.insert(f.name.clone(), f.return_type.clone());
+                self.comptime_functions.insert(f.name.clone(), f.clone());
                 functions.push(f);
             }
         }
@@ -356,6 +362,9 @@ impl Parser {
         let mut params = Vec::new();
         if !self.check(&TokenKind::RParen) {
             loop {
+                if self.check(&TokenKind::Comptime) {
+                    self.advance();
+                }
                 let p = self.expect_ident()?;
                 self.expect(TokenKind::Colon)?;
                 let ty = self.parse_type()?;
@@ -371,6 +380,7 @@ impl Parser {
         let return_type = self.parse_type()?;
         self.return_type = return_type.clone();
         self.locals.clear();
+        self.comptime_ints.clear();
         for (name, ty) in &self.globals {
             self.locals.insert(name.clone(), ty.clone());
         }
@@ -400,6 +410,9 @@ impl Parser {
         let mut params = Vec::new();
         if !self.check(&TokenKind::RParen) {
             loop {
+                if self.check(&TokenKind::Comptime) {
+                    self.advance();
+                }
                 let p = self.expect_ident()?;
                 self.expect(TokenKind::Colon)?;
                 let ty = self.parse_type()?;
@@ -415,6 +428,7 @@ impl Parser {
         let return_type = self.parse_type()?;
         self.return_type = return_type.clone();
         self.locals.clear();
+        self.comptime_ints.clear();
         for (name, ty) in &self.globals {
             self.locals.insert(name.clone(), ty.clone());
         }
@@ -467,6 +481,14 @@ impl Parser {
                 TokenKind::Int(n) => {
                     self.advance();
                     n as usize
+                }
+                TokenKind::Ident(name) => {
+                    self.advance();
+                    *self
+                        .comptime_ints
+                        .get(&name)
+                        .ok_or_else(|| format!("array length {name:?} is not comptime-known"))?
+                        as usize
                 }
                 other => return Err(format!("expected array length, found {other:?}")),
             };
@@ -551,6 +573,7 @@ impl Parser {
     fn parse_stmt(&mut self) -> Result<Stmt, String> {
         match self.peek_kind() {
             TokenKind::Const | TokenKind::Var => {
+                let is_const = self.check(&TokenKind::Const);
                 self.advance();
                 let name = self.expect_ident()?;
                 let ty = if self.check(&TokenKind::Colon) {
@@ -583,6 +606,13 @@ impl Parser {
                 });
                 self.expect(TokenKind::Semicolon)?;
                 self.locals.insert(name.clone(), ty.clone());
+                if is_const {
+                    if let Some(value) =
+                        eval_comptime_expr(&value, &self.comptime_ints, &self.comptime_functions)
+                    {
+                        self.comptime_ints.insert(name.clone(), value);
+                    }
+                }
                 Ok(Stmt::Let { name, ty, value })
             }
             TokenKind::Return => {
@@ -1368,6 +1398,10 @@ impl Parser {
             self.advance();
             let operand = self.parse_unary()?;
             return Ok(Expr::Try(Box::new(operand)));
+        }
+        if self.check(&TokenKind::Comptime) {
+            self.advance();
+            return self.parse_unary();
         }
         if self.check(&TokenKind::Minus) {
             self.advance();
@@ -2689,6 +2723,148 @@ fn wider_int_type(a: IntType, b: IntType) -> IntType {
     } else {
         a
     }
+}
+
+fn eval_comptime_expr(
+    expr: &Expr,
+    locals: &HashMap<String, i64>,
+    functions: &HashMap<String, Function>,
+) -> Option<i64> {
+    eval_comptime_expr_with_fuel(expr, locals, functions, 4096)
+}
+
+fn eval_comptime_expr_with_fuel(
+    expr: &Expr,
+    locals: &HashMap<String, i64>,
+    functions: &HashMap<String, Function>,
+    fuel: usize,
+) -> Option<i64> {
+    if fuel == 0 {
+        return None;
+    }
+    match expr {
+        Expr::Int(n) => Some(*n),
+        Expr::Bool(v) => Some(if *v { 1 } else { 0 }),
+        Expr::Var(name) => locals.get(name).copied(),
+        Expr::IntCast { expr, .. } => {
+            eval_comptime_expr_with_fuel(expr, locals, functions, fuel - 1)
+        }
+        Expr::UnaryNeg(inner) => Some(-eval_comptime_expr_with_fuel(
+            inner,
+            locals,
+            functions,
+            fuel - 1,
+        )?),
+        Expr::UnaryNot(inner) => Some(
+            if eval_comptime_expr_with_fuel(inner, locals, functions, fuel - 1)? == 0 {
+                1
+            } else {
+                0
+            },
+        ),
+        Expr::BinOp { op, left, right } => {
+            let l = eval_comptime_expr_with_fuel(left, locals, functions, fuel - 1)?;
+            let r = eval_comptime_expr_with_fuel(right, locals, functions, fuel - 1)?;
+            Some(match op {
+                BinOp::Add => l + r,
+                BinOp::Sub => l - r,
+                BinOp::Mul => l * r,
+                BinOp::Div => l / r,
+                BinOp::Mod => l % r,
+                BinOp::Lt => (l < r) as i64,
+                BinOp::Gt => (l > r) as i64,
+                BinOp::Le => (l <= r) as i64,
+                BinOp::Ge => (l >= r) as i64,
+                BinOp::Eq => (l == r) as i64,
+                BinOp::Ne => (l != r) as i64,
+                BinOp::BitAnd => l & r,
+                BinOp::BitOr => l | r,
+                BinOp::BitXor => l ^ r,
+                BinOp::Shl => l << (r as u32),
+                BinOp::Shr => ((l as u64) >> (r as u32)) as i64,
+                BinOp::LogicalAnd => ((l != 0) && (r != 0)) as i64,
+                BinOp::LogicalOr => ((l != 0) || (r != 0)) as i64,
+            })
+        }
+        Expr::Call { name, args } => {
+            let f = functions.get(name)?;
+            if f.params.len() != args.len() {
+                return None;
+            }
+            let mut fn_locals = HashMap::new();
+            for ((param, _), arg) in f.params.iter().zip(args.iter()) {
+                let value = eval_comptime_expr_with_fuel(arg, locals, functions, fuel - 1)?;
+                fn_locals.insert(param.clone(), value);
+            }
+            eval_comptime_block(&f.body, &mut fn_locals, functions, fuel - 1)
+        }
+        Expr::If {
+            cond,
+            then_expr,
+            else_expr,
+        } => {
+            if eval_comptime_expr_with_fuel(cond, locals, functions, fuel - 1)? != 0 {
+                eval_comptime_expr_with_fuel(then_expr, locals, functions, fuel - 1)
+            } else {
+                eval_comptime_expr_with_fuel(else_expr, locals, functions, fuel - 1)
+            }
+        }
+        Expr::Mod { left, right } | Expr::Rem { left, right } => {
+            let l = eval_comptime_expr_with_fuel(left, locals, functions, fuel - 1)?;
+            let r = eval_comptime_expr_with_fuel(right, locals, functions, fuel - 1)?;
+            Some(l % r)
+        }
+        _ => None,
+    }
+}
+
+fn eval_comptime_block(
+    stmts: &[Stmt],
+    locals: &mut HashMap<String, i64>,
+    functions: &HashMap<String, Function>,
+    fuel: usize,
+) -> Option<i64> {
+    if fuel == 0 {
+        return None;
+    }
+    for stmt in stmts {
+        match stmt {
+            Stmt::Return(expr) => {
+                return eval_comptime_expr_with_fuel(expr, locals, functions, fuel - 1);
+            }
+            Stmt::Let { name, value, .. } => {
+                if let Some(value) =
+                    eval_comptime_expr_with_fuel(value, locals, functions, fuel - 1)
+                {
+                    locals.insert(name.clone(), value);
+                }
+            }
+            Stmt::If {
+                cond,
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                if eval_comptime_expr_with_fuel(cond, locals, functions, fuel - 1)? != 0 {
+                    let mut branch_locals = locals.clone();
+                    if let Some(value) =
+                        eval_comptime_block(then_branch, &mut branch_locals, functions, fuel - 1)
+                    {
+                        return Some(value);
+                    }
+                } else if let Some(else_branch) = else_branch {
+                    let mut branch_locals = locals.clone();
+                    if let Some(value) =
+                        eval_comptime_block(else_branch, &mut branch_locals, functions, fuel - 1)
+                    {
+                        return Some(value);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 #[cfg(test)]
