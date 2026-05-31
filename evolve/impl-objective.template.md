@@ -16,9 +16,9 @@ and zigrun/oracle/diff.sh.
 
 WAVE: ${item_id} — ${objective}
 
-Target ${path} — make zigrun match REAL zig on it. Implement in zigrun/src
+Target zigrun/${path} — make zigrun match REAL zig on it. Implement in zigrun/src
 (lexer/ast/parser/codegen) WITHOUT breaking existing oracle programs. Promote:
-`git mv ${path} zigrun/oracle/${item_id}.zig` and add '${item_id}' to
+`git mv zigrun/${path} zigrun/oracle/${item_id}.zig` and add '${item_id}' to
 zigrun/oracle/check.sh AND zigrun/oracle/diff.sh.
 
 VERIFY: `bash zigrun/oracle/diff.sh ${item_id}` DIFFERENTIAL GREEN; full
