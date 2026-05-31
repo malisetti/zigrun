@@ -89,7 +89,10 @@ fn compile_c_and_run(c_src: &str, src_path: &str) -> i32 {
     match compiled {
         Ok(o) if o.status.success() => {}
         Ok(o) => {
-            eprintln!("zigrun: cc failed to compile {src_path}:\n{}", String::from_utf8_lossy(&o.stderr));
+            eprintln!(
+                "zigrun: cc failed to compile {src_path}:\n{}",
+                String::from_utf8_lossy(&o.stderr)
+            );
             let _ = fs::remove_file(&binfile);
             return ERR_EXIT;
         }
