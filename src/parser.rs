@@ -1867,7 +1867,7 @@ impl Parser {
             self.expr_union_hint = Some(union_name.clone());
         }
         self.expect(TokenKind::LBrace)?;
-        let elems = self.parse_array_elems()?;
+        let elems = self.parse_array_elems_with_hint(Some(&elem_ty))?;
         self.expr_union_hint = None;
         self.expect(TokenKind::RBrace)?;
         Ok(Expr::ArrayLiteral {
@@ -1966,10 +1966,18 @@ impl Parser {
     }
 
     fn parse_array_elems(&mut self) -> Result<Vec<Expr>, String> {
+        let elem_hint = match self.expr_type_hint.clone() {
+            Some(Type::Array { elem, .. }) => Some(*elem),
+            _ => None,
+        };
+        self.parse_array_elems_with_hint(elem_hint.as_ref())
+    }
+
+    fn parse_array_elems_with_hint(&mut self, hint: Option<&Type>) -> Result<Vec<Expr>, String> {
         let mut elems = Vec::new();
         if !self.check(&TokenKind::RBrace) {
             loop {
-                elems.push(self.parse_expr()?);
+                elems.push(self.parse_expr_with_type_hint(hint)?);
                 if self.check(&TokenKind::Comma) {
                     self.advance();
                     if self.check(&TokenKind::RBrace) {
