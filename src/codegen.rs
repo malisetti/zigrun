@@ -978,7 +978,8 @@ fn c_enum_variant(enum_name: &str, variant: &str) -> String {
 fn c_type(ty: &Type) -> String {
     match ty {
         Type::Bool => "bool".to_string(),
-        Type::Int(IntType::U2)
+        Type::Int(IntType::U1)
+        | Type::Int(IntType::U2)
         | Type::Int(IntType::U3)
         | Type::Int(IntType::U4)
         | Type::Int(IntType::U5) => "uint8_t".to_string(),

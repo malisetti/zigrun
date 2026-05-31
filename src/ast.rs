@@ -147,6 +147,7 @@ impl Type {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IntType {
+    U1,
     U2,
     U3,
     U4,
@@ -164,6 +165,7 @@ pub enum IntType {
 impl IntType {
     pub fn from_name(name: &str) -> Option<Self> {
         match name {
+            "u1" => Some(IntType::U1),
             "u2" => Some(IntType::U2),
             "u3" => Some(IntType::U3),
             "u4" => Some(IntType::U4),
@@ -189,6 +191,7 @@ impl IntType {
 
     pub fn bits(self) -> u32 {
         match self {
+            IntType::U1 => 1,
             IntType::U2 => 2,
             IntType::U3 => 3,
             IntType::U4 => 4,
@@ -202,6 +205,7 @@ impl IntType {
 
     pub fn rank(self) -> u8 {
         match self {
+            IntType::U1 => 0,
             IntType::U2 | IntType::U3 => 0,
             IntType::U4 | IntType::U5 => 1,
             IntType::U8 | IntType::I8 => 2,
