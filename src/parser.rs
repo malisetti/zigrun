@@ -697,7 +697,23 @@ impl Parser {
             let end = self.parse_expr()?;
             self.expect(TokenKind::RParen)?;
             let capture = self.parse_for_capture()?;
+            let saved_capture = capture.as_ref().map(|cap| {
+                (
+                    cap.clone(),
+                    self.locals.insert(cap.clone(), Type::Int(IntType::U64)),
+                )
+            });
             let body = self.parse_for_body()?;
+            if let Some((cap, prev)) = saved_capture {
+                match prev {
+                    Some(ty) => {
+                        self.locals.insert(cap, ty);
+                    }
+                    None => {
+                        self.locals.remove(&cap);
+                    }
+                }
+            }
             return Ok(Stmt::ForRange {
                 label,
                 capture,
@@ -738,7 +754,51 @@ impl Parser {
         };
 
         let (capture, ptr_capture, idx_capture) = self.parse_for_captures_extended(has_idx)?;
+        let elem_ty = self.locals.get(&array).and_then(|ty| match ty {
+            Type::Array { elem, .. } | Type::Slice { elem, .. } => Some(elem.as_ref().clone()),
+            Type::Pointer(inner) => match inner.as_ref() {
+                Type::Array { elem, .. } => Some(elem.as_ref().clone()),
+                _ => None,
+            },
+            _ => None,
+        });
+        let saved_capture = capture.as_ref().and_then(|cap| {
+            elem_ty.as_ref().map(|elem_ty| {
+                let cap_ty = if ptr_capture {
+                    Type::Pointer(Box::new(elem_ty.clone()))
+                } else {
+                    elem_ty.clone()
+                };
+                (cap.clone(), self.locals.insert(cap.clone(), cap_ty))
+            })
+        });
+        let saved_idx = idx_capture.as_ref().map(|idx| {
+            (
+                idx.clone(),
+                self.locals.insert(idx.clone(), Type::Int(IntType::U64)),
+            )
+        });
         let body = self.parse_for_body()?;
+        if let Some((cap, prev)) = saved_capture {
+            match prev {
+                Some(ty) => {
+                    self.locals.insert(cap, ty);
+                }
+                None => {
+                    self.locals.remove(&cap);
+                }
+            }
+        }
+        if let Some((idx, prev)) = saved_idx {
+            match prev {
+                Some(ty) => {
+                    self.locals.insert(idx, ty);
+                }
+                None => {
+                    self.locals.remove(&idx);
+                }
+            }
+        }
 
         Ok(Stmt::ForArray {
             label,
