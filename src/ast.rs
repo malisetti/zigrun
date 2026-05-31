@@ -141,6 +141,7 @@ pub enum IntType {
     U2,
     U3,
     U4,
+    U5,
     U8,
     U16,
     U32,
@@ -157,6 +158,7 @@ impl IntType {
             "u2" => Some(IntType::U2),
             "u3" => Some(IntType::U3),
             "u4" => Some(IntType::U4),
+            "u5" => Some(IntType::U5),
             "u8" => Some(IntType::U8),
             "u16" => Some(IntType::U16),
             "u32" => Some(IntType::U32),
@@ -178,6 +180,7 @@ impl IntType {
             IntType::U2 => 2,
             IntType::U3 => 3,
             IntType::U4 => 4,
+            IntType::U5 => 5,
             IntType::U8 | IntType::I8 => 8,
             IntType::U16 | IntType::I16 => 16,
             IntType::U32 | IntType::I32 => 32,
@@ -188,7 +191,7 @@ impl IntType {
     pub fn rank(self) -> u8 {
         match self {
             IntType::U2 | IntType::U3 => 0,
-            IntType::U4 => 1,
+            IntType::U4 | IntType::U5 => 1,
             IntType::U8 | IntType::I8 => 2,
             IntType::U16 | IntType::I16 => 3,
             IntType::U32 | IntType::I32 => 4,
