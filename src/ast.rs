@@ -258,7 +258,15 @@ pub struct Program {
     pub error_sets: Vec<ErrorSetDef>,
     pub structs: Vec<StructDef>,
     pub unions: Vec<UnionDef>,
+    pub globals: Vec<GlobalVar>,
     pub functions: Vec<Function>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GlobalVar {
+    pub name: String,
+    pub ty: Type,
+    pub value: Expr,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -293,6 +301,7 @@ pub enum Stmt {
     },
     While {
         cond: Expr,
+        ok_capture: Option<String>,
         /// `while (cond) : (cont) { ... }` — runs after each iteration and on `continue`.
         cont: Option<Expr>,
         body: Vec<Stmt>,
