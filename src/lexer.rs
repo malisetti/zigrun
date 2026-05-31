@@ -294,9 +294,7 @@ impl<'a> Lexer<'a> {
     fn read_int(&mut self) -> Result<TokenKind, String> {
         let start = self.pos;
         // Check for 0b (binary) or 0x (hex) prefix
-        if self.input[self.pos] == b'0'
-            && self.pos + 1 < self.input.len()
-        {
+        if self.input[self.pos] == b'0' && self.pos + 1 < self.input.len() {
             let next = self.input[self.pos + 1] as char;
             if next == 'b' || next == 'B' {
                 self.pos += 2;
@@ -309,7 +307,9 @@ impl<'a> Lexer<'a> {
                             has_digit = true;
                             self.pos += 1;
                         }
-                        '_' => { self.pos += 1; }
+                        '_' => {
+                            self.pos += 1;
+                        }
                         _ => break,
                     }
                 }
@@ -338,7 +338,9 @@ impl<'a> Lexer<'a> {
                             has_digit = true;
                             self.pos += 1;
                         }
-                        '_' => { self.pos += 1; }
+                        '_' => {
+                            self.pos += 1;
+                        }
                         _ => break,
                     }
                 }
@@ -349,8 +351,7 @@ impl<'a> Lexer<'a> {
             }
         }
         while self.pos < self.input.len()
-            && ((self.input[self.pos] as char).is_ascii_digit()
-                || self.input[self.pos] == b'_')
+            && ((self.input[self.pos] as char).is_ascii_digit() || self.input[self.pos] == b'_')
         {
             self.pos += 1;
         }
@@ -450,6 +451,8 @@ mod tests {
             .unwrap();
         assert!(toks.iter().any(|t| t.kind == TokenKind::Fn));
         assert!(toks.iter().any(|t| t.kind == TokenKind::Lt));
-        assert!(toks.iter().any(|t| t.kind == TokenKind::Ident("fib".into())));
+        assert!(toks
+            .iter()
+            .any(|t| t.kind == TokenKind::Ident("fib".into())));
     }
 }

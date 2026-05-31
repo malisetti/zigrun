@@ -6,9 +6,15 @@
 pub enum Type {
     Bool,
     Int(IntType),
-    Array { len: usize, elem: Box<Type> },
+    Array {
+        len: usize,
+        elem: Box<Type>,
+    },
     /// `[]const T` or `[]T` — fat pointer (ptr + len).
-    Slice { const_: bool, elem: Box<Type> },
+    Slice {
+        const_: bool,
+        elem: Box<Type>,
+    },
     Enum(String),
     Struct(String),
     Union(String),
@@ -172,7 +178,10 @@ impl IntType {
     }
 
     pub fn is_signed(self) -> bool {
-        matches!(self, IntType::I8 | IntType::I16 | IntType::I32 | IntType::I64)
+        matches!(
+            self,
+            IntType::I8 | IntType::I16 | IntType::I32 | IntType::I64
+        )
     }
 
     pub fn bits(self) -> u32 {
@@ -268,7 +277,10 @@ pub enum Stmt {
         ty: Type,
         value: Expr,
     },
-    Assign { target: AssignTarget, value: Expr },
+    Assign {
+        target: AssignTarget,
+        value: Expr,
+    },
     Return(Expr),
     /// Expression statement, e.g. `std.debug.print(...);`
     Expr(Expr),
@@ -320,14 +332,8 @@ pub struct SwitchStmtArm {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AssignTarget {
     Name(String),
-    Index {
-        base: Box<Expr>,
-        index: Box<Expr>,
-    },
-    Field {
-        base: Box<Expr>,
-        field: String,
-    },
+    Index { base: Box<Expr>, index: Box<Expr> },
+    Field { base: Box<Expr>, field: String },
     Deref(Box<Expr>),
 }
 
@@ -368,10 +374,15 @@ pub enum Expr {
     Bool(bool),
     Null,
     /// `std.debug.print(fmt, .{{}})` lowered to fprintf(stderr, …).
-    DebugPrint { format: String },
+    DebugPrint {
+        format: String,
+    },
     Undefined,
     Var(String),
-    Call { name: String, args: Vec<Expr> },
+    Call {
+        name: String,
+        args: Vec<Expr>,
+    },
     BinOp {
         op: BinOp,
         left: Box<Expr>,

@@ -16,6 +16,7 @@ use std::fmt::Write;
 
 thread_local! {
     static ENUM_DEFS: RefCell<HashMap<String, EnumDef>> = RefCell::new(HashMap::new());
+    static ERROR_SET_DEFS: RefCell<HashMap<String, ErrorSetDef>> = RefCell::new(HashMap::new());
     static UNION_DEFS: RefCell<HashMap<String, UnionDef>> = RefCell::new(HashMap::new());
     static STRUCT_DEFS: RefCell<HashMap<String, StructDef>> = RefCell::new(HashMap::new());
     static FUNC_PARAMS: RefCell<HashMap<String, Vec<Type>>> = RefCell::new(HashMap::new());
@@ -23,17 +24,21 @@ thread_local! {
 
 fn with_type_defs<R>(
     enums: &HashMap<String, EnumDef>,
+    error_sets: &HashMap<String, ErrorSetDef>,
     unions: &HashMap<String, UnionDef>,
     structs: &HashMap<String, StructDef>,
     f: impl FnOnce() -> R,
 ) -> R {
     ENUM_DEFS.with(|cell| {
         *cell.borrow_mut() = enums.clone();
-        UNION_DEFS.with(|u_cell| {
-            *u_cell.borrow_mut() = unions.clone();
-            STRUCT_DEFS.with(|s_cell| {
-                *s_cell.borrow_mut() = structs.clone();
-                f()
+        ERROR_SET_DEFS.with(|e_cell| {
+            *e_cell.borrow_mut() = error_sets.clone();
+            UNION_DEFS.with(|u_cell| {
+                *u_cell.borrow_mut() = unions.clone();
+                STRUCT_DEFS.with(|s_cell| {
+                    *s_cell.borrow_mut() = structs.clone();
+                    f()
+                })
             })
         })
     })
@@ -41,6 +46,10 @@ fn with_type_defs<R>(
 
 fn lookup_enum(name: &str) -> Option<EnumDef> {
     ENUM_DEFS.with(|cell| cell.borrow().get(name).cloned())
+}
+
+fn lookup_error_set(name: &str) -> Option<ErrorSetDef> {
+    ERROR_SET_DEFS.with(|cell| cell.borrow().get(name).cloned())
 }
 
 fn lookup_union(name: &str) -> Option<UnionDef> {
@@ -79,10 +88,17 @@ pub fn emit_c(program: &Program) -> Result<String, String> {
         return Err("no `main` function".to_string());
     }
     let mut out = String::new();
-    out.push_str("#include <stdint.h>\n#include <stdbool.h>\n#include <stddef.h>\n#include <stdio.h>\n\n");
+    out.push_str(
+        "#include <stdint.h>\n#include <stdbool.h>\n#include <stddef.h>\n#include <stdio.h>\n\n",
+    );
 
     let enum_defs: HashMap<String, EnumDef> = program
         .enums
+        .iter()
+        .map(|e| (e.name.clone(), e.clone()))
+        .collect();
+    let error_set_defs: HashMap<String, ErrorSetDef> = program
+        .error_sets
         .iter()
         .map(|e| (e.name.clone(), e.clone()))
         .collect();
@@ -96,7 +112,13 @@ pub fn emit_c(program: &Program) -> Result<String, String> {
         .iter()
         .map(|s| (s.name.clone(), s.clone()))
         .collect();
-    with_type_defs(&enum_defs, &union_defs, &struct_defs, || {});
+    with_type_defs(
+        &enum_defs,
+        &error_set_defs,
+        &union_defs,
+        &struct_defs,
+        || {},
+    );
 
     for e in &program.enums {
         emit_enum_def(&mut out, e)?;
@@ -150,17 +172,28 @@ pub fn emit_c(program: &Program) -> Result<String, String> {
     let func_params: HashMap<String, Vec<Type>> = program
         .functions
         .iter()
-        .map(|f| (f.name.clone(), f.params.iter().map(|(_, t)| t.clone()).collect()))
+        .map(|f| {
+            (
+                f.name.clone(),
+                f.params.iter().map(|(_, t)| t.clone()).collect(),
+            )
+        })
         .collect();
     FUNC_PARAMS.with(|cell| *cell.borrow_mut() = func_params);
 
-    with_type_defs(&enum_defs, &union_defs, &struct_defs, || {
-        for f in &program.functions {
-            emit_function(&mut out, f, &func_returns)?;
-            out.push('\n');
-        }
-        Ok::<(), String>(())
-    })?;
+    with_type_defs(
+        &enum_defs,
+        &error_set_defs,
+        &union_defs,
+        &struct_defs,
+        || {
+            for f in &program.functions {
+                emit_function(&mut out, f, &func_returns)?;
+                out.push('\n');
+            }
+            Ok::<(), String>(())
+        },
+    )?;
 
     let void_main = program
         .functions
@@ -183,13 +216,7 @@ fn emit_struct_def(out: &mut String, s: &StructDef) -> Result<(), String> {
     for (field, ty) in &s.fields {
         if s.packed {
             if let Some(bits) = packed_field_bits(ty) {
-                let _ = writeln!(
-                    out,
-                    "    {} {} : {};",
-                    packed_field_c_type(ty),
-                    field,
-                    bits
-                );
+                let _ = writeln!(out, "    {} {} : {};", packed_field_c_type(ty), field, bits);
                 continue;
             }
         }
@@ -198,7 +225,6 @@ fn emit_struct_def(out: &mut String, s: &StructDef) -> Result<(), String> {
     let _ = writeln!(out, "}} {};", s.name);
     Ok(())
 }
-
 
 fn c_union_tag(union: &UnionDef, variant: &str) -> String {
     match &union.tag_enum {
@@ -305,7 +331,9 @@ fn collect_optionals_in_stmts(stmts: &[Stmt], add: &mut dyn FnMut(&Type)) {
                 }
                 collect_optionals_in_stmts(body, add);
             }
-            Stmt::ForRange { start, end, body, .. } => {
+            Stmt::ForRange {
+                start, end, body, ..
+            } => {
                 collect_optionals_in_expr(start, add);
                 collect_optionals_in_expr(end, add);
                 collect_optionals_in_stmts(body, add);
@@ -339,7 +367,12 @@ fn collect_optionals_in_expr(expr: &Expr, add: &mut dyn FnMut(&Type)) {
             collect_optionals_in_expr(right, add);
         }
         Expr::Try(e) => collect_optionals_in_expr(e, add),
-        Expr::Catch { expr, fallback, .. } | Expr::CatchReturn { expr, ret_val: fallback, .. } => {
+        Expr::Catch { expr, fallback, .. }
+        | Expr::CatchReturn {
+            expr,
+            ret_val: fallback,
+            ..
+        } => {
             collect_optionals_in_expr(expr, add);
             collect_optionals_in_expr(fallback, add);
         }
@@ -365,7 +398,10 @@ fn collect_optionals_in_expr(expr: &Expr, add: &mut dyn FnMut(&Type)) {
                 collect_optionals_in_expr(d, add);
             }
         }
-        Expr::IntCast { expr, .. } | Expr::BitCast { expr, .. } | Expr::UnaryNeg(expr) | Expr::UnaryNot(expr) => {
+        Expr::IntCast { expr, .. }
+        | Expr::BitCast { expr, .. }
+        | Expr::UnaryNeg(expr)
+        | Expr::UnaryNot(expr) => {
             collect_optionals_in_expr(expr, add);
         }
         Expr::Mod { left, right } | Expr::Rem { left, right } => {
@@ -458,7 +494,9 @@ fn collect_error_unions_in_stmts(stmts: &[Stmt], add: &mut dyn FnMut(&Type)) {
                 }
                 collect_error_unions_in_stmts(body, add);
             }
-            Stmt::ForRange { start, end, body, .. } => {
+            Stmt::ForRange {
+                start, end, body, ..
+            } => {
                 collect_error_unions_in_expr(start, add);
                 collect_error_unions_in_expr(end, add);
                 collect_error_unions_in_stmts(body, add);
@@ -492,7 +530,12 @@ fn collect_error_unions_in_expr(expr: &Expr, add: &mut dyn FnMut(&Type)) {
             collect_error_unions_in_expr(right, add);
         }
         Expr::Try(e) => collect_error_unions_in_expr(e, add),
-        Expr::Catch { expr, fallback, .. } | Expr::CatchReturn { expr, ret_val: fallback, .. } => {
+        Expr::Catch { expr, fallback, .. }
+        | Expr::CatchReturn {
+            expr,
+            ret_val: fallback,
+            ..
+        } => {
             collect_error_unions_in_expr(expr, add);
             collect_error_unions_in_expr(fallback, add);
         }
@@ -518,7 +561,10 @@ fn collect_error_unions_in_expr(expr: &Expr, add: &mut dyn FnMut(&Type)) {
                 collect_error_unions_in_expr(d, add);
             }
         }
-        Expr::IntCast { expr, .. } | Expr::BitCast { expr, .. } | Expr::UnaryNeg(expr) | Expr::UnaryNot(expr) => {
+        Expr::IntCast { expr, .. }
+        | Expr::BitCast { expr, .. }
+        | Expr::UnaryNeg(expr)
+        | Expr::UnaryNot(expr) => {
             collect_error_unions_in_expr(expr, add);
         }
         Expr::Mod { left, right } | Expr::Rem { left, right } => {
@@ -607,6 +653,45 @@ fn c_error_variant_tag(err_set: &str, variant: &str) -> String {
     format!("{err_set}_err_{variant}")
 }
 
+fn map_error_tag_expr(
+    src_tag: &str,
+    src_err_set: &str,
+    dest_err_set: &str,
+) -> Result<String, String> {
+    if src_err_set == dest_err_set {
+        return Ok(src_tag.to_string());
+    }
+    let src = lookup_error_set(src_err_set)
+        .ok_or_else(|| format!("unknown source error set {src_err_set:?}"))?;
+    let dest = lookup_error_set(dest_err_set)
+        .ok_or_else(|| format!("unknown destination error set {dest_err_set:?}"))?;
+    let mut expr = c_error_ok_tag(dest_err_set);
+    for variant in src.variants.iter().rev() {
+        if !dest.variants.iter().any(|v| v == variant) {
+            return Err(format!(
+                "cannot coerce error {src_err_set}.{variant} into {dest_err_set}"
+            ));
+        }
+        expr = format!(
+            "(({src_tag}) == {} ? {} : ({expr}))",
+            c_error_variant_tag(src_err_set, variant),
+            c_error_variant_tag(dest_err_set, variant)
+        );
+    }
+    Ok(expr)
+}
+
+fn error_union_error_value(
+    src_tag: &str,
+    src_err_set: &str,
+    dest_err_set: &str,
+    payload: &Type,
+) -> Result<String, String> {
+    let st = c_error_union_name(dest_err_set, payload);
+    let mapped = map_error_tag_expr(src_tag, src_err_set, dest_err_set)?;
+    Ok(format!("({st}){{ .err = {mapped} }}"))
+}
+
 fn c_error_union_name(err_set: &str, payload: &Type) -> String {
     format!("{err_set}_{}", c_type(payload))
 }
@@ -682,7 +767,9 @@ fn collect_slices_in_stmts(stmts: &[Stmt], add: &mut dyn FnMut(&Type)) {
                 }
                 collect_slices_in_stmts(body, add);
             }
-            Stmt::ForRange { start, end, body, .. } => {
+            Stmt::ForRange {
+                start, end, body, ..
+            } => {
                 collect_slices_in_expr(start, add);
                 collect_slices_in_expr(end, add);
                 collect_slices_in_stmts(body, add);
@@ -835,11 +922,7 @@ fn emit_slice_struct_def(
     Ok(())
 }
 
-fn array_to_slice_expr(
-    arr_expr: &str,
-    len: usize,
-    slice_ty: &Type,
-) -> String {
+fn array_to_slice_expr(arr_expr: &str, len: usize, slice_ty: &Type) -> String {
     format!(
         "({}){{ .ptr = {arr_expr}, .len = {len} }}",
         c_slice_name(slice_ty)
@@ -868,9 +951,7 @@ fn c_type(ty: &Type) -> String {
         Type::Int(IntType::U2)
         | Type::Int(IntType::U3)
         | Type::Int(IntType::U4)
-        | Type::Int(IntType::U5) => {
-            "uint8_t".to_string()
-        }
+        | Type::Int(IntType::U5) => "uint8_t".to_string(),
         Type::Int(IntType::U8) => "uint8_t".to_string(),
         Type::Int(IntType::U16) => "uint16_t".to_string(),
         Type::Int(IntType::U32) => "uint32_t".to_string(),
@@ -902,7 +983,11 @@ fn c_var_decl(name: &str, ty: &Type) -> String {
 fn c_ptr_to_array_elem_decl(name: &str, array_ty: &Type) -> String {
     match array_ty {
         Type::Array { elem, .. } => {
-            format!("{} (*{name}){}", c_array_base(array_ty), c_array_suffix(elem))
+            format!(
+                "{} (*{name}){}",
+                c_array_base(array_ty),
+                c_array_suffix(elem)
+            )
         }
         other => format!("{} *{name}", c_type(other)),
     }
@@ -956,12 +1041,7 @@ fn prototype(f: &Function) -> String {
             .collect::<Vec<_>>()
             .join(", ")
     };
-    format!(
-        "{} {}({})",
-        c_type(&f.return_type),
-        c_fn(&f.name),
-        params
-    )
+    format!("{} {}({})", c_type(&f.return_type), c_fn(&f.name), params)
 }
 
 fn emit_function(
@@ -1010,17 +1090,21 @@ fn indexed_lvalue_type(
         .unwrap_or(Type::Int(IntType::U8))
 }
 
-fn expr_type(expr: &Expr, env: &HashMap<String, Type>, func_returns: &HashMap<String, Type>) -> Type {
+fn expr_type(
+    expr: &Expr,
+    env: &HashMap<String, Type>,
+    func_returns: &HashMap<String, Type>,
+) -> Type {
     match expr {
         Expr::Int(_) => Type::Int(IntType::U8),
         Expr::Bool(_) => Type::Bool,
         Expr::Null => Type::Int(IntType::U8),
         Expr::Undefined => Type::Int(IntType::U8),
-        Expr::Var(name) => env
-            .get(name)
-            .cloned()
-            .unwrap_or(Type::Int(IntType::U8)),
-        Expr::EnumLiteral { enum_name, variant: _ } => Type::Enum(enum_name.clone()),
+        Expr::Var(name) => env.get(name).cloned().unwrap_or(Type::Int(IntType::U8)),
+        Expr::EnumLiteral {
+            enum_name,
+            variant: _,
+        } => Type::Enum(enum_name.clone()),
         Expr::IntFromEnum(inner) => {
             let backing = expr_type(inner, env, func_returns)
                 .enum_name()
@@ -1033,8 +1117,12 @@ fn expr_type(expr: &Expr, env: &HashMap<String, Type>, func_returns: &HashMap<St
         Expr::Try(inner) => expr_type(inner, env, func_returns)
             .error_union_payload()
             .unwrap_or(Type::Int(IntType::U8)),
-        Expr::Catch { expr, .. } => expr_type(expr, env, func_returns).error_union_payload().unwrap_or(Type::Int(IntType::U8)),
-        Expr::CatchReturn { expr, .. } => expr_type(expr, env, func_returns).error_union_payload().unwrap_or(Type::Int(IntType::U8)),
+        Expr::Catch { expr, .. } => expr_type(expr, env, func_returns)
+            .error_union_payload()
+            .unwrap_or(Type::Int(IntType::U8)),
+        Expr::CatchReturn { expr, .. } => expr_type(expr, env, func_returns)
+            .error_union_payload()
+            .unwrap_or(Type::Int(IntType::U8)),
         Expr::BinOp { op, left, right } => match op {
             BinOp::LogicalAnd | BinOp::LogicalOr => Type::Bool,
             _ => combine_types(
@@ -1104,9 +1192,9 @@ fn expr_type(expr: &Expr, env: &HashMap<String, Type>, func_returns: &HashMap<St
             }
         }
         Expr::StructLiteral { struct_name, .. } => Type::Struct(struct_name.clone()),
-        Expr::UnionLiteral { union_name, .. } => Type::Union(
-            union_name.clone().unwrap_or_else(|| "Shape".to_string()),
-        ),
+        Expr::UnionLiteral { union_name, .. } => {
+            Type::Union(union_name.clone().unwrap_or_else(|| "Shape".to_string()))
+        }
         Expr::EmptyInit => Type::Void,
         Expr::FieldAccess { base, field } => field_expr_type(base, field, env),
         Expr::Deref(inner) => expr_type(inner, env, func_returns)
@@ -1123,7 +1211,10 @@ fn expr_type(expr: &Expr, env: &HashMap<String, Type>, func_returns: &HashMap<St
 fn field_expr_type(base: &Expr, field: &str, env: &HashMap<String, Type>) -> Type {
     let base_ty = match base {
         Expr::Var(name) => env.get(name).cloned(),
-        Expr::FieldAccess { base, field: parent } => Some(field_expr_type(base, parent, env)),
+        Expr::FieldAccess {
+            base,
+            field: parent,
+        } => Some(field_expr_type(base, parent, env)),
         Expr::StructLiteral { struct_name, .. } => Some(Type::Struct(struct_name.clone())),
         _ => None,
     };
@@ -1154,10 +1245,7 @@ fn combine_types(a: Type, b: Type) -> Type {
         (_, Type::Int(y)) => Type::Int(y),
         (Type::Array { elem, .. }, Type::Array { elem: elem2, .. }) => Type::Array {
             len: 0,
-            elem: Box::new(combine_types(
-                elem.as_ref().clone(),
-                elem2.as_ref().clone(),
-            )),
+            elem: Box::new(combine_types(elem.as_ref().clone(), elem2.as_ref().clone())),
         },
         (Type::Array { elem, .. }, _) | (_, Type::Array { elem, .. }) => elem
             .int_type()
@@ -1198,10 +1286,7 @@ fn emit_while_cont_expr(
 ) -> Result<(), String> {
     if let Expr::BinOp { op, left, right } = expr {
         if let Expr::Var(name) = left.as_ref() {
-            let ty = env
-                .get(name)
-                .cloned()
-                .unwrap_or(Type::Int(IntType::U8));
+            let ty = env.get(name).cloned().unwrap_or(Type::Int(IntType::U8));
             let _ = writeln!(
                 out,
                 "{name} = {};",
@@ -1272,11 +1357,7 @@ fn emit_stmt(
             );
         }
         Stmt::Expr(Expr::DebugPrint { format }) => {
-            let _ = writeln!(
-                out,
-                "fprintf(stderr, {});",
-                c_string_literal(format)
-            );
+            let _ = writeln!(out, "fprintf(stderr, {});", c_string_literal(format));
         }
         Stmt::Expr(e) => {
             let _ = writeln!(
@@ -1296,14 +1377,7 @@ fn emit_stmt(
                     let tag = c_error_variant_tag(err_set, variant);
                     format!("({st}){{ .err = {tag} }}")
                 } else {
-                    let val = emit_expr(
-                        e,
-                        env,
-                        Some(payload),
-                        func_returns,
-                        return_type,
-                        temp_id,
-                    )?;
+                    let val = emit_expr(e, env, Some(payload), func_returns, return_type, temp_id)?;
                     let st = c_error_union_name(err_set, payload);
                     let ok = c_error_ok_tag(err_set);
                     format!("({st}){{ .err = {ok}, .value = {val} }}")
@@ -1368,7 +1442,8 @@ fn emit_stmt(
                         if let Some(err_var) = err_capture {
                             let tag_ty = c_error_tag_enum(&err_set);
                             let _ = writeln!(out, "    {} {} = {}.err;", tag_ty, err_var, tmp);
-                            else_env.insert(err_var.clone(), Type::Enum(format!("{}_err", err_set)));
+                            else_env
+                                .insert(err_var.clone(), Type::Enum(format!("{}_err", err_set)));
                         }
 
                         for s in eb {
@@ -1394,7 +1469,14 @@ fn emit_stmt(
                     }
                     let opt = c_optional_name(&inner);
                     let tmp = next_temp(temp_id);
-                    let cond_code = emit_expr(cond, env, Some(&Type::Optional(inner.clone())), func_returns, return_type, temp_id)?;
+                    let cond_code = emit_expr(
+                        cond,
+                        env,
+                        Some(&Type::Optional(inner.clone())),
+                        func_returns,
+                        return_type,
+                        temp_id,
+                    )?;
                     let _ = writeln!(out, "{} {} = {};", opt, tmp, cond_code);
                     let _ = writeln!(out, "if (!{}.is_null) {{", tmp);
 
@@ -1558,8 +1640,8 @@ fn emit_stmt(
                 expr_type(start, env, func_returns),
                 expr_type(end, env, func_returns),
             )
-                .int_type()
-                .unwrap_or(IntType::U8);
+            .int_type()
+            .unwrap_or(IntType::U8);
             let loop_ty_type = Type::Int(loop_ty);
             let end_label = label.as_ref().map(|zig_label| {
                 let c_label = format!("zig_lbreak_{}", *temp_id);
@@ -1571,8 +1653,22 @@ fn emit_stmt(
                 out,
                 "for ({} {var} = {}; {var} < {}; {var}++) {{",
                 c_int_type(loop_ty),
-                emit_expr(start, env, Some(&loop_ty_type), func_returns, return_type, temp_id)?,
-                emit_expr(end, env, Some(&loop_ty_type), func_returns, return_type, temp_id)?
+                emit_expr(
+                    start,
+                    env,
+                    Some(&loop_ty_type),
+                    func_returns,
+                    return_type,
+                    temp_id
+                )?,
+                emit_expr(
+                    end,
+                    env,
+                    Some(&loop_ty_type),
+                    func_returns,
+                    return_type,
+                    temp_id
+                )?
             );
             if let Some(cap) = capture {
                 env.insert(cap.clone(), Type::Int(loop_ty));
@@ -1618,11 +1714,23 @@ fn emit_stmt(
             let (len_expr, elem_ty, via_ptr, via_slice) = match &arr_ty {
                 Type::Array { len, elem } => (len.to_string(), elem.as_ref().clone(), false, false),
                 Type::Pointer(inner) => match inner.as_ref() {
-                    Type::Array { len, elem } => (len.to_string(), elem.as_ref().clone(), true, false),
-                    _ => return Err(format!("for-loop expected array or pointer-to-array, found {arr_ty:?}")),
+                    Type::Array { len, elem } => {
+                        (len.to_string(), elem.as_ref().clone(), true, false)
+                    }
+                    _ => {
+                        return Err(format!(
+                            "for-loop expected array or pointer-to-array, found {arr_ty:?}"
+                        ))
+                    }
                 },
-                Type::Slice { elem, .. } => (format!("({array}).len"), elem.as_ref().clone(), false, true),
-                other => return Err(format!("for-loop expected array or slice type, found {other:?}")),
+                Type::Slice { elem, .. } => {
+                    (format!("({array}).len"), elem.as_ref().clone(), false, true)
+                }
+                other => {
+                    return Err(format!(
+                        "for-loop expected array or slice type, found {other:?}"
+                    ))
+                }
             };
             let cap = capture.as_deref().unwrap_or("_zig_for_x");
             // Use idx_capture as loop variable if provided, else a private name
@@ -1639,7 +1747,10 @@ fn emit_stmt(
                 loop_break_labels.push((zig_label.clone(), c_label.clone()));
                 c_label
             });
-            let _ = writeln!(out, "for (size_t {idx} = 0; {idx} < {len_expr}; {idx}++) {{");
+            let _ = writeln!(
+                out,
+                "for (size_t {idx} = 0; {idx} < {len_expr}; {idx}++) {{"
+            );
 
             // Build the capture declaration
             let cap_decl = if *ptr_capture {
@@ -1731,7 +1842,10 @@ fn emit_stmt(
                         .ok_or_else(|| format!("unknown union {union_name}"))?;
                     let mut first = true;
                     for arm in arms {
-                        let SwitchTag::UnionVariant { variant, capture, .. } = &arm.tag else {
+                        let SwitchTag::UnionVariant {
+                            variant, capture, ..
+                        } = &arm.tag
+                        else {
                             return Err("union switch requires union variant arms".to_string());
                         };
                         let tag = c_union_tag(&udef, variant);
@@ -1744,8 +1858,7 @@ fn emit_stmt(
                         }
                         let mut arm_env = env.clone();
                         if let Some(cap) = capture {
-                            let payload_ty =
-                                union_variant_payload_type(&udef, variant)?;
+                            let payload_ty = union_variant_payload_type(&udef, variant)?;
                             let cap_ct = c_type(&payload_ty);
                             let payload = union_payload_access(&scrut_s, variant);
                             let bind = format!("{cap_ct} {cap} = {payload}");
@@ -1754,7 +1867,17 @@ fn emit_stmt(
                             arm_env.insert(cap.clone(), payload_ty);
                         }
                         for s in &arm.body {
-                            emit_stmt(out, s, depth + 1, &mut arm_env, return_type, func_returns, temp_id, loop_cont, loop_break_labels)?;
+                            emit_stmt(
+                                out,
+                                s,
+                                depth + 1,
+                                &mut arm_env,
+                                return_type,
+                                func_returns,
+                                temp_id,
+                                loop_cont,
+                                loop_break_labels,
+                            )?;
                         }
                     }
                     if !arms.is_empty() {
@@ -1777,7 +1900,17 @@ fn emit_stmt(
                             let _ = writeln!(out, "}} else if (({scrut_s}) == {tag}) {{");
                         }
                         for s in &arm.body {
-                            emit_stmt(out, s, depth + 1, env, return_type, func_returns, temp_id, loop_cont, loop_break_labels)?;
+                            emit_stmt(
+                                out,
+                                s,
+                                depth + 1,
+                                env,
+                                return_type,
+                                func_returns,
+                                temp_id,
+                                loop_cont,
+                                loop_break_labels,
+                            )?;
                         }
                     }
                     if !arms.is_empty() {
@@ -1806,8 +1939,7 @@ fn emit_stmt(
                         }
                         let mut arm_env = env.clone();
                         if let SwitchTag::IntRange {
-                            capture: Some(cap),
-                            ..
+                            capture: Some(cap), ..
                         } = &arm.tag
                         {
                             let ct = c_type(&scrutinee_ty);
@@ -1842,10 +1974,7 @@ fn emit_stmt(
 
 fn assign_target_type(target: &AssignTarget, env: &HashMap<String, Type>) -> Type {
     match target {
-        AssignTarget::Name(name) => env
-            .get(name)
-            .cloned()
-            .unwrap_or(Type::Int(IntType::U8)),
+        AssignTarget::Name(name) => env.get(name).cloned().unwrap_or(Type::Int(IntType::U8)),
         AssignTarget::Index { base, .. } => indexed_lvalue_type(base, env, &HashMap::new()),
         AssignTarget::Field { base, field } => field_expr_type(base, field, env),
         AssignTarget::Deref(inner) => expr_type(inner, env, &HashMap::new())
@@ -1889,7 +2018,10 @@ fn emit_assign_target(
             emit_field_access(base, field, env, func_returns, fn_return_type, temp_id)?
         }
         AssignTarget::Deref(inner) => {
-            format!("*{}", emit_expr(inner, env, None, func_returns, fn_return_type, temp_id)?)
+            format!(
+                "*{}",
+                emit_expr(inner, env, None, func_returns, fn_return_type, temp_id)?
+            )
         }
     })
 }
@@ -1936,7 +2068,10 @@ fn emit_expr(
         }
         Expr::StringLit(s) => c_string_literal(s),
         Expr::DebugPrint { format } => {
-            format!("(fprintf(stderr, {}, (void)0), 0)", c_string_literal(format))
+            format!(
+                "(fprintf(stderr, {}, (void)0), 0)",
+                c_string_literal(format)
+            )
         }
         Expr::Undefined => return Err("undefined has no runtime value".to_string()),
         Expr::Var(name) => name.clone(),
@@ -1951,7 +2086,10 @@ fn emit_expr(
             let inner_s = emit_expr(
                 inner,
                 env,
-                inner_ty.enum_name().map(|n| Type::Enum(n.to_string())).as_ref(),
+                inner_ty
+                    .enum_name()
+                    .map(|n| Type::Enum(n.to_string()))
+                    .as_ref(),
                 func_returns,
                 fn_return_type,
                 temp_id,
@@ -2122,16 +2260,29 @@ fn emit_expr(
             let st = c_error_union_name(&err_set, &payload);
             let ok = c_error_ok_tag(&err_set);
             let tmp = next_temp(temp_id);
-            let call = emit_expr(
-                inner,
-                env,
-                None,
-                func_returns,
-                fn_return_type,
-                temp_id,
-            )?;
+            let ret_err = match fn_return_type {
+                Type::ErrorUnion {
+                    err_set: ret_err_set,
+                    payload: ret_payload,
+                } => {
+                    if ret_payload.as_ref() != payload.as_ref() {
+                        return Err(
+                            "try propagation payload type must match function return payload"
+                                .to_string(),
+                        );
+                    }
+                    error_union_error_value(
+                        &format!("{tmp}.err"),
+                        &err_set,
+                        ret_err_set,
+                        ret_payload,
+                    )?
+                }
+                _ => unreachable!(),
+            };
+            let call = emit_expr(inner, env, None, func_returns, fn_return_type, temp_id)?;
             format!(
-                "({{ {st} {tmp} = {call}; if ({tmp}.err != {ok}) return {tmp}; {tmp}.value; }})"
+                "({{ {st} {tmp} = {call}; if ({tmp}.err != {ok}) return {ret_err}; {tmp}.value; }})"
             )
         }
         Expr::Catch {
@@ -2146,14 +2297,7 @@ fn emit_expr(
             let st = c_error_union_name(&err_set, &payload);
             let ok = c_error_ok_tag(&err_set);
             let tmp = next_temp(temp_id);
-            let call = emit_expr(
-                expr,
-                env,
-                None,
-                func_returns,
-                fn_return_type,
-                temp_id,
-            )?;
+            let call = emit_expr(expr, env, None, func_returns, fn_return_type, temp_id)?;
             let mut fb_env = env.clone();
             let fb = if let Some(cap) = capture {
                 let tag_ty = c_error_tag_enum(&err_set);
@@ -2177,9 +2321,7 @@ fn emit_expr(
                     temp_id,
                 )?
             };
-            format!(
-                "({{ {st} {tmp} = {call}; {tmp}.err == {ok} ? {tmp}.value : ({fb}); }})"
-            )
+            format!("({{ {st} {tmp} = {call}; {tmp}.err == {ok} ? {tmp}.value : ({fb}); }})")
         }
         Expr::CatchReturn {
             expr,
@@ -2193,14 +2335,7 @@ fn emit_expr(
             let st = c_error_union_name(&err_set, &payload);
             let ok = c_error_ok_tag(&err_set);
             let tmp = next_temp(temp_id);
-            let call = emit_expr(
-                expr,
-                env,
-                None,
-                func_returns,
-                fn_return_type,
-                temp_id,
-            )?;
+            let call = emit_expr(expr, env, None, func_returns, fn_return_type, temp_id)?;
             let mut ret_env = env.clone();
             let ret = if let Some(cap) = capture {
                 let tag_ty = c_error_tag_enum(&err_set);
@@ -2307,7 +2442,16 @@ fn emit_expr(
                 .unwrap_or(Type::Int(IntType::U8));
             let parts: Result<Vec<_>, _> = elems
                 .iter()
-                .map(|e| emit_expr(e, env, Some(&elem_ty), func_returns, fn_return_type, temp_id))
+                .map(|e| {
+                    emit_expr(
+                        e,
+                        env,
+                        Some(&elem_ty),
+                        func_returns,
+                        fn_return_type,
+                        temp_id,
+                    )
+                })
                 .collect();
             format!("{{ {} }}", parts?.join(", "))
         }
@@ -2384,7 +2528,10 @@ fn emit_expr(
                 emit_expr(inner, env, None, func_returns, fn_return_type, temp_id)?
             )
         }
-        Expr::StructLiteral { struct_name, fields } => {
+        Expr::StructLiteral {
+            struct_name,
+            fields,
+        } => {
             let mut parts = Vec::new();
             for (field, value) in fields {
                 parts.push(format!(
@@ -2418,8 +2565,7 @@ fn emit_expr(
         }
         Expr::EmptyInit => return Err("empty init has no runtime value".to_string()),
         Expr::FieldAccess { base, field } => {
-            let base_s =
-                emit_expr(base, env, None, func_returns, fn_return_type, temp_id)?;
+            let base_s = emit_expr(base, env, None, func_returns, fn_return_type, temp_id)?;
             if let Type::Union(union_name) = expr_type(base, env, func_returns) {
                 if let Some(udef) = lookup_union(&union_name) {
                     if udef.variants.iter().any(|v| v.name == *field) {
@@ -2508,8 +2654,8 @@ fn emit_mod_rem(
     if it.is_signed() {
         if is_mod {
             Ok(format!(
-                "(({ct} __a = ({l}), {ct} __b = ({r}), {ct} __m = __a % __b, \
-                 (__m != 0 && ((__m < 0) != (__b < 0))) ? __m + __b : __m))"
+                "({{ {ct} __a = ({l}); {ct} __b = ({r}); {ct} __m = __a % __b; \
+                 (__m != 0 && ((__m < 0) != (__b < 0))) ? __m + __b : __m; }})"
             ))
         } else {
             Ok(format!("(({ct})({l}) % ({ct})({r}))"))
@@ -2581,7 +2727,9 @@ fn emit_bitcast(
                 ));
             }
         }
-        return Err(format!("@bitCast to non-packed struct {sname} is unsupported"));
+        return Err(format!(
+            "@bitCast to non-packed struct {sname} is unsupported"
+        ));
     }
 
     let Type::Int(target_int) = target else {
@@ -2614,14 +2762,7 @@ fn emit_switch(
     if arms.is_empty() {
         return Err("switch has no arms".to_string());
     }
-    let s = emit_expr(
-        scrutinee,
-        env,
-        None,
-        func_returns,
-        fn_return_type,
-        temp_id,
-    )?;
+    let s = emit_expr(scrutinee, env, None, func_returns, fn_return_type, temp_id)?;
     let scrutinee_ty = expr_type(scrutinee, env, func_returns);
     if let Type::Union(union_name) = scrutinee_ty {
         return emit_union_switch(
@@ -2635,14 +2776,7 @@ fn emit_switch(
         );
     }
     let mut result = match default {
-        Some(d) => emit_expr(
-            d,
-            env,
-            None,
-            func_returns,
-            fn_return_type,
-            temp_id,
-        )?,
+        Some(d) => emit_expr(d, env, None, func_returns, fn_return_type, temp_id)?,
         None => emit_expr(
             &arms[arms.len() - 1].expr,
             env,
@@ -2708,7 +2842,10 @@ fn emit_union_switch(
     let mut out = String::from("({\n");
     let _ = writeln!(out, "    {ct} _zig_switch_result = 0;");
     for arm in arms {
-        let SwitchTag::UnionVariant { variant, capture, .. } = &arm.tag else {
+        let SwitchTag::UnionVariant {
+            variant, capture, ..
+        } = &arm.tag
+        else {
             return Err("union switch requires union variant arms".to_string());
         };
         let udef = lookup_union(union_name).ok_or_else(|| format!("unknown union {union_name}"))?;
