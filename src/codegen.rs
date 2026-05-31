@@ -7,8 +7,8 @@
 // checked arithmetic — tracked in FEATURES.md.
 
 use crate::ast::{
-    AssignTarget, BinOp, EnumDef, ErrorSetDef, Expr, Function, IntType, Program, Stmt, StructDef,
-    SwitchArm, SwitchTag, Type, UnionDef, UnionVariant,
+    AssignTarget, BinOp, EnumDef, ErrorSetDef, Expr, Function, GlobalVar, IntType, Program, Stmt,
+    StructDef, SwitchArm, SwitchTag, Type, UnionDef, UnionVariant,
 };
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -158,6 +158,18 @@ pub fn emit_c(program: &Program) -> Result<String, String> {
         out.push('\n');
     }
 
+    let global_types: HashMap<String, Type> = program
+        .globals
+        .iter()
+        .map(|g| (g.name.clone(), g.ty.clone()))
+        .collect();
+    for g in &program.globals {
+        emit_global_var(&mut out, g, &global_types)?;
+    }
+    if !program.globals.is_empty() {
+        out.push('\n');
+    }
+
     for f in &program.functions {
         let _ = writeln!(out, "{};", prototype(f));
     }
@@ -188,7 +200,7 @@ pub fn emit_c(program: &Program) -> Result<String, String> {
         &struct_defs,
         || {
             for f in &program.functions {
-                emit_function(&mut out, f, &func_returns)?;
+                emit_function(&mut out, f, &func_returns, &global_types)?;
                 out.push('\n');
             }
             Ok::<(), String>(())
@@ -299,6 +311,10 @@ fn collect_optional_types(program: &Program) -> Vec<Type> {
         }
         collect_optionals_in_stmts(&f.body, &mut add);
     }
+    for g in &program.globals {
+        add(&g.ty);
+        collect_optionals_in_expr(&g.value, &mut add);
+    }
     out
 }
 
@@ -324,7 +340,9 @@ fn collect_optionals_in_stmts(stmts: &[Stmt], add: &mut dyn FnMut(&Type)) {
                     collect_optionals_in_stmts(eb, add);
                 }
             }
-            Stmt::While { cond, cont, body } => {
+            Stmt::While {
+                cond, cont, body, ..
+            } => {
                 collect_optionals_in_expr(cond, add);
                 if let Some(c) = cont {
                     collect_optionals_in_expr(c, add);
@@ -462,6 +480,10 @@ fn collect_error_union_types(program: &Program) -> Vec<Type> {
         }
         collect_error_unions_in_stmts(&f.body, &mut add);
     }
+    for g in &program.globals {
+        add(&g.ty);
+        collect_error_unions_in_expr(&g.value, &mut add);
+    }
     out
 }
 
@@ -487,7 +509,9 @@ fn collect_error_unions_in_stmts(stmts: &[Stmt], add: &mut dyn FnMut(&Type)) {
                     collect_error_unions_in_stmts(eb, add);
                 }
             }
-            Stmt::While { cond, cont, body } => {
+            Stmt::While {
+                cond, cont, body, ..
+            } => {
                 collect_error_unions_in_expr(cond, add);
                 if let Some(c) = cont {
                     collect_error_unions_in_expr(c, add);
@@ -503,7 +527,7 @@ fn collect_error_unions_in_stmts(stmts: &[Stmt], add: &mut dyn FnMut(&Type)) {
             }
             Stmt::ForArray { body, .. } => collect_error_unions_in_stmts(body, add),
             Stmt::Break { .. } | Stmt::Continue => {}
-            Stmt::Expr(e) => collect_optionals_in_expr(e, add),
+            Stmt::Expr(e) => collect_error_unions_in_expr(e, add),
             Stmt::Switch { scrutinee, arms } => {
                 collect_error_unions_in_expr(scrutinee, add);
                 for arm in arms {
@@ -736,6 +760,10 @@ fn collect_slice_types(program: &Program) -> Vec<Type> {
         }
         collect_slices_in_stmts(&f.body, &mut add);
     }
+    for g in &program.globals {
+        add(&g.ty);
+        collect_slices_in_expr(&g.value, &mut add);
+    }
     out
 }
 
@@ -760,7 +788,9 @@ fn collect_slices_in_stmts(stmts: &[Stmt], add: &mut dyn FnMut(&Type)) {
                     collect_slices_in_stmts(eb, add);
                 }
             }
-            Stmt::While { cond, cont, body } => {
+            Stmt::While {
+                cond, cont, body, ..
+            } => {
                 collect_slices_in_expr(cond, add);
                 if let Some(c) = cont {
                     collect_slices_in_expr(c, add);
@@ -1044,13 +1074,32 @@ fn prototype(f: &Function) -> String {
     format!("{} {}({})", c_type(&f.return_type), c_fn(&f.name), params)
 }
 
+fn emit_global_var(
+    out: &mut String,
+    g: &GlobalVar,
+    global_types: &HashMap<String, Type>,
+) -> Result<(), String> {
+    let mut temp_id = 0usize;
+    let init = emit_expr(
+        &g.value,
+        global_types,
+        Some(&g.ty),
+        &HashMap::new(),
+        &Type::Void,
+        &mut temp_id,
+    )?;
+    let _ = writeln!(out, "{} = {};", c_var_decl(&g.name, &g.ty), init);
+    Ok(())
+}
+
 fn emit_function(
     out: &mut String,
     f: &Function,
     func_returns: &HashMap<String, Type>,
+    global_types: &HashMap<String, Type>,
 ) -> Result<(), String> {
     let _ = writeln!(out, "{} {{", prototype(f));
-    let mut env: HashMap<String, Type> = HashMap::new();
+    let mut env: HashMap<String, Type> = global_types.clone();
     let mut temp_id = 0usize;
     for (name, ty) in &f.params {
         env.insert(name.clone(), ty.clone());
@@ -1569,12 +1618,12 @@ fn emit_stmt(
                 out.push('\n');
             }
         }
-        Stmt::While { cond, cont, body } => {
-            let _ = writeln!(
-                out,
-                "while ({}) {{",
-                emit_expr(cond, env, None, func_returns, return_type, temp_id)?
-            );
+        Stmt::While {
+            cond,
+            ok_capture,
+            cont,
+            body,
+        } => {
             let cont_label = if cont.is_some() {
                 let label = format!("zig_while_cont_{}", *temp_id);
                 *temp_id += 1;
@@ -1584,25 +1633,71 @@ fn emit_stmt(
                 loop_cont.push(None);
                 None
             };
-            for s in body {
-                emit_stmt(
+            if let Some(ok_var) = ok_capture {
+                let cond_ty = expr_type(cond, env, func_returns);
+                let inner = cond_ty
+                    .optional_inner()
+                    .ok_or_else(|| "while capture requires optional condition".to_string())?;
+                let opt_ty = Type::Optional(Box::new(inner.clone()));
+                let opt = c_optional_name(&inner);
+                let tmp = next_temp(temp_id);
+                let cond_code =
+                    emit_expr(cond, env, Some(&opt_ty), func_returns, return_type, temp_id)?;
+                let _ = writeln!(out, "while (true) {{");
+                indent(out, depth + 1);
+                let _ = writeln!(out, "{opt} {tmp} = {cond_code};");
+                indent(out, depth + 1);
+                let _ = writeln!(out, "if ({tmp}.is_null) break;");
+                let mut body_env = env.clone();
+                body_env.insert(ok_var.clone(), inner.clone());
+                indent(out, depth + 1);
+                let _ = writeln!(out, "{} {} = {}.value;", c_type(&inner), ok_var, tmp);
+                for s in body {
+                    emit_stmt(
+                        out,
+                        s,
+                        depth + 1,
+                        &mut body_env,
+                        return_type,
+                        func_returns,
+                        temp_id,
+                        loop_cont,
+                        loop_break_labels,
+                    )?;
+                }
+                if let (Some(c), Some(label)) = (cont, cont_label.as_ref()) {
+                    indent(out, depth + 1);
+                    let _ = writeln!(out, "{label}:");
+                    indent(out, depth + 1);
+                    emit_while_cont_expr(out, c, &body_env, func_returns, return_type, temp_id)?;
+                    out.push('\n');
+                }
+            } else {
+                let _ = writeln!(
                     out,
-                    s,
-                    depth + 1,
-                    env,
-                    return_type,
-                    func_returns,
-                    temp_id,
-                    loop_cont,
-                    loop_break_labels,
-                )?;
-            }
-            if let (Some(c), Some(label)) = (cont, cont_label) {
-                indent(out, depth + 1);
-                let _ = writeln!(out, "{label}:");
-                indent(out, depth + 1);
-                emit_while_cont_expr(out, c, env, func_returns, return_type, temp_id)?;
-                out.push('\n');
+                    "while ({}) {{",
+                    emit_expr(cond, env, None, func_returns, return_type, temp_id)?
+                );
+                for s in body {
+                    emit_stmt(
+                        out,
+                        s,
+                        depth + 1,
+                        env,
+                        return_type,
+                        func_returns,
+                        temp_id,
+                        loop_cont,
+                        loop_break_labels,
+                    )?;
+                }
+                if let (Some(c), Some(label)) = (cont, cont_label.as_ref()) {
+                    indent(out, depth + 1);
+                    let _ = writeln!(out, "{label}:");
+                    indent(out, depth + 1);
+                    emit_while_cont_expr(out, c, env, func_returns, return_type, temp_id)?;
+                    out.push('\n');
+                }
             }
             loop_cont.pop();
             indent(out, depth);
@@ -2074,7 +2169,19 @@ fn emit_expr(
             )
         }
         Expr::Undefined => return Err("undefined has no runtime value".to_string()),
-        Expr::Var(name) => name.clone(),
+        Expr::Var(name) => {
+            if let Some(Type::Optional(inner)) = expected {
+                if !matches!(env.get(name), Some(Type::Optional(_))) {
+                    let opt = c_optional_name(inner);
+                    let ct = c_type(inner);
+                    format!("({opt}){{ .is_null = false, .value = ({ct})({name}) }}")
+                } else {
+                    name.clone()
+                }
+            } else {
+                name.clone()
+            }
+        }
         Expr::EnumLiteral { enum_name, variant } => c_enum_variant(enum_name, variant),
         Expr::IntFromEnum(inner) => {
             let inner_ty = expr_type(inner, env, func_returns);

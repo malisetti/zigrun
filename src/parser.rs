@@ -20,8 +20,8 @@
 //              | "@intCast" "(" expr ")"
 
 use crate::ast::{
-    AssignTarget, BinOp, EnumDef, EnumVariant, ErrorSetDef, Expr, Function, IntType, Program, Stmt,
-    StructDef, SwitchArm, SwitchStmtArm, SwitchTag, Type, UnionDef, UnionVariant,
+    AssignTarget, BinOp, EnumDef, EnumVariant, ErrorSetDef, Expr, Function, GlobalVar, IntType,
+    Program, Stmt, StructDef, SwitchArm, SwitchStmtArm, SwitchTag, Type, UnionDef, UnionVariant,
 };
 use crate::lexer::{Token, TokenKind};
 use std::collections::HashMap;
@@ -36,6 +36,7 @@ pub struct Parser {
     unions: HashMap<String, Vec<UnionVariant>>,
     functions: HashMap<String, Type>,
     function_params: HashMap<String, Vec<Type>>,
+    globals: HashMap<String, Type>,
     locals: HashMap<String, Type>,
     expr_enum_hint: Option<String>,
     expr_union_hint: Option<String>,
@@ -58,6 +59,7 @@ impl Parser {
             unions: HashMap::new(),
             functions: HashMap::new(),
             function_params: HashMap::new(),
+            globals: HashMap::new(),
             locals: HashMap::new(),
             expr_enum_hint: None,
             expr_union_hint: None,
@@ -74,6 +76,7 @@ impl Parser {
         let mut error_set_defs = Vec::new();
         let mut struct_defs = Vec::new();
         let mut union_defs = Vec::new();
+        let mut globals = Vec::new();
         let mut functions = Vec::new();
         while !self.check(&TokenKind::Eof) {
             if self.check(&TokenKind::Const) {
@@ -92,6 +95,10 @@ impl Parser {
                     }
                     TopLevelDecl::Union(u) => union_defs.push(u),
                 }
+            } else if self.check(&TokenKind::Var) {
+                let global = self.parse_global_var_decl()?;
+                self.globals.insert(global.name.clone(), global.ty.clone());
+                globals.push(global);
             } else {
                 let f = self.parse_function()?;
                 self.functions.insert(f.name.clone(), f.return_type.clone());
@@ -108,8 +115,22 @@ impl Parser {
             error_sets: error_set_defs,
             structs: all_structs,
             unions: union_defs,
+            globals,
             functions,
         })
+    }
+
+    fn parse_global_var_decl(&mut self) -> Result<GlobalVar, String> {
+        self.expect(TokenKind::Var)?;
+        let name = self.expect_ident()?;
+        self.expect(TokenKind::Colon)?;
+        let ty = self.parse_type()?;
+        self.expect(TokenKind::Assign)?;
+        self.expr_type_hint = Some(ty.clone());
+        let value = self.parse_expr()?;
+        self.expr_type_hint = None;
+        self.expect(TokenKind::Semicolon)?;
+        Ok(GlobalVar { name, ty, value })
     }
 
     fn parse_const_decl(&mut self) -> Result<TopLevelDecl, String> {
@@ -350,6 +371,9 @@ impl Parser {
         let return_type = self.parse_type()?;
         self.return_type = return_type.clone();
         self.locals.clear();
+        for (name, ty) in &self.globals {
+            self.locals.insert(name.clone(), ty.clone());
+        }
         for (p, ty) in &params {
             self.locals.insert(p.clone(), ty.clone());
         }
@@ -391,6 +415,9 @@ impl Parser {
         let return_type = self.parse_type()?;
         self.return_type = return_type.clone();
         self.locals.clear();
+        for (name, ty) in &self.globals {
+            self.locals.insert(name.clone(), ty.clone());
+        }
         for (p, ty) in &params {
             self.locals.insert(p.clone(), ty.clone());
         }
@@ -573,6 +600,14 @@ impl Parser {
                 self.expect(TokenKind::LParen)?;
                 let cond = self.parse_expr()?;
                 self.expect(TokenKind::RParen)?;
+                let ok_capture = if self.check(&TokenKind::Pipe) {
+                    self.advance();
+                    let name = self.expect_ident()?;
+                    self.expect(TokenKind::Pipe)?;
+                    Some(name)
+                } else {
+                    None
+                };
                 let cont = if self.check(&TokenKind::Colon) {
                     self.advance();
                     self.expect(TokenKind::LParen)?;
@@ -582,8 +617,31 @@ impl Parser {
                 } else {
                     None
                 };
+                let saved_ok = if let Some(cap) = &ok_capture {
+                    let cond_ty = self.infer_expr_type_local(&cond);
+                    cond_ty
+                        .optional_inner()
+                        .map(|payload| (cap.clone(), self.locals.insert(cap.clone(), payload)))
+                } else {
+                    None
+                };
                 let body = self.parse_block()?;
-                Ok(Stmt::While { cond, cont, body })
+                if let Some((cap, prev)) = saved_ok {
+                    match prev {
+                        Some(t) => {
+                            self.locals.insert(cap, t);
+                        }
+                        None => {
+                            self.locals.remove(&cap);
+                        }
+                    }
+                }
+                Ok(Stmt::While {
+                    cond,
+                    ok_capture,
+                    cont,
+                    body,
+                })
             }
             TokenKind::Break => {
                 self.advance();
