@@ -2648,10 +2648,18 @@ fn infer_expr_type(
         Expr::Deref(inner) => infer_expr_type(inner, enums, structs, unions, locals, functions)
             .pointee()
             .unwrap_or(Type::Int(IntType::U8)),
-        Expr::Orelse { right, .. } => {
-            infer_expr_type(right, enums, structs, unions, locals, functions)
+        Expr::Orelse { left, right } => {
+            infer_expr_type(left, enums, structs, unions, locals, functions)
+                .optional_inner()
+                .unwrap_or_else(|| {
+                    infer_expr_type(right, enums, structs, unions, locals, functions)
+                })
         }
-        Expr::StringLit(_) | Expr::DebugPrint { .. } => Type::Void,
+        Expr::StringLit(_) => Type::Slice {
+            const_: true,
+            elem: Box::new(Type::Int(IntType::U8)),
+        },
+        Expr::DebugPrint { .. } => Type::Void,
     }
 }
 

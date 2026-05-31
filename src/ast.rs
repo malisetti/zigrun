@@ -32,6 +32,9 @@ impl Type {
         if name == "bool" {
             return Some(Type::Bool);
         }
+        if name == "usize" {
+            return Some(Type::Int(IntType::U64));
+        }
         IntType::from_name(name).map(Type::Int)
     }
 
