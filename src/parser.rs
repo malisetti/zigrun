@@ -1425,6 +1425,12 @@ impl Parser {
                     expr = Expr::Deref(Box::new(expr));
                     continue;
                 }
+                // `expr.?` — optional payload unwrap
+                if self.check(&TokenKind::Question) {
+                    self.advance();
+                    expr = Expr::OptionalUnwrap(Box::new(expr));
+                    continue;
+                }
                 let field = self.expect_ident()?;
                 if let Expr::Var(err_set) = &expr {
                     if self.error_sets.contains_key(err_set) {
@@ -2656,6 +2662,11 @@ fn infer_expr_type(
         Expr::Deref(inner) => infer_expr_type(inner, enums, structs, unions, locals, functions)
             .pointee()
             .unwrap_or(Type::Int(IntType::U8)),
+        Expr::OptionalUnwrap(inner) => {
+            infer_expr_type(inner, enums, structs, unions, locals, functions)
+                .optional_inner()
+                .unwrap_or(Type::Int(IntType::U8))
+        }
         Expr::Orelse { left, right } => {
             infer_expr_type(left, enums, structs, unions, locals, functions)
                 .optional_inner()

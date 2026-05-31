@@ -447,7 +447,10 @@ fn collect_optionals_in_expr(expr: &Expr, add: &mut dyn FnMut(&Type)) {
         }
         Expr::UnionLiteral { value: Some(v), .. } => collect_optionals_in_expr(v, add),
         Expr::FieldAccess { base, .. } => collect_optionals_in_expr(base, add),
-        Expr::IntFromEnum(inner) | Expr::Deref(inner) | Expr::AddrOf(inner) => {
+        Expr::IntFromEnum(inner)
+        | Expr::Deref(inner)
+        | Expr::OptionalUnwrap(inner)
+        | Expr::AddrOf(inner) => {
             collect_optionals_in_expr(inner, add);
         }
         Expr::Int(_)
@@ -617,7 +620,10 @@ fn collect_error_unions_in_expr(expr: &Expr, add: &mut dyn FnMut(&Type)) {
         Expr::UnionLiteral { value: Some(v), .. } => collect_error_unions_in_expr(v, add),
         Expr::UnionLiteral { value: None, .. } => {}
         Expr::FieldAccess { base, .. } => collect_error_unions_in_expr(base, add),
-        Expr::IntFromEnum(inner) | Expr::Deref(inner) | Expr::AddrOf(inner) => {
+        Expr::IntFromEnum(inner)
+        | Expr::Deref(inner)
+        | Expr::OptionalUnwrap(inner)
+        | Expr::AddrOf(inner) => {
             collect_error_unions_in_expr(inner, add);
         }
         Expr::Int(_)
@@ -891,7 +897,9 @@ fn collect_slices_in_expr(expr: &Expr, add: &mut dyn FnMut(&Type)) {
         }
         Expr::UnionLiteral { value: Some(v), .. } => collect_slices_in_expr(v, add),
         Expr::FieldAccess { base, .. } => collect_slices_in_expr(base, add),
-        Expr::IntFromEnum(inner) | Expr::Deref(inner) => collect_slices_in_expr(inner, add),
+        Expr::IntFromEnum(inner) | Expr::Deref(inner) | Expr::OptionalUnwrap(inner) => {
+            collect_slices_in_expr(inner, add)
+        }
         Expr::Orelse { left, right } => {
             collect_slices_in_expr(left, add);
             collect_slices_in_expr(right, add);
@@ -1249,6 +1257,9 @@ fn expr_type(
         Expr::FieldAccess { base, field } => field_expr_type(base, field, env),
         Expr::Deref(inner) => expr_type(inner, env, func_returns)
             .pointee()
+            .unwrap_or(Type::Int(IntType::U8)),
+        Expr::OptionalUnwrap(inner) => expr_type(inner, env, func_returns)
+            .optional_inner()
             .unwrap_or(Type::Int(IntType::U8)),
         Expr::AddrOf(inner) => Type::Pointer(Box::new(expr_type(inner, env, func_returns))),
         Expr::Orelse { left, right } => expr_type(left, env, func_returns)
@@ -2711,6 +2722,21 @@ fn emit_expr(
                 "(*{})",
                 emit_expr(inner, env, None, func_returns, fn_return_type, temp_id)?
             )
+        }
+        Expr::OptionalUnwrap(inner) => {
+            let inner_ty = expr_type(inner, env, func_returns)
+                .optional_inner()
+                .ok_or_else(|| "optional unwrap requires optional expression".to_string())?;
+            let opt_ty = Type::Optional(Box::new(inner_ty));
+            let inner_s = emit_expr(
+                inner,
+                env,
+                Some(&opt_ty),
+                func_returns,
+                fn_return_type,
+                temp_id,
+            )?;
+            format!("({inner_s}).value")
         }
         Expr::Orelse { left, right } => {
             let inner = expr_type(left, env, func_returns)
