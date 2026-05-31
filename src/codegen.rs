@@ -1253,7 +1253,11 @@ fn expr_type(
         Expr::Orelse { left, right } => expr_type(left, env, func_returns)
             .optional_inner()
             .unwrap_or_else(|| expr_type(right, env, func_returns)),
-        Expr::StringLit(_) | Expr::DebugPrint { .. } => Type::Void,
+        Expr::StringLit(_) => Type::Slice {
+            const_: true,
+            elem: Box::new(Type::Int(IntType::U8)),
+        },
+        Expr::DebugPrint { .. } => Type::Void,
     }
 }
 
@@ -2161,7 +2165,20 @@ fn emit_expr(
                 "false".to_string()
             }
         }
-        Expr::StringLit(s) => c_string_literal(s),
+        Expr::StringLit(s) => {
+            if let Some(slice_ty @ Type::Slice { .. }) = expected {
+                let lit = c_string_literal(s);
+                format!(
+                    "({}){{ .ptr = ({} const *){}, .len = {} }}",
+                    c_slice_name(slice_ty),
+                    c_type(&Type::Int(IntType::U8)),
+                    lit,
+                    s.len()
+                )
+            } else {
+                c_string_literal(s)
+            }
+        }
         Expr::DebugPrint { format } => {
             format!(
                 "(fprintf(stderr, {}, (void)0), 0)",
@@ -2207,16 +2224,20 @@ fn emit_expr(
             let params = lookup_func_params(name);
             let mut parts = Vec::with_capacity(args.len());
             for (i, a) in args.iter().enumerate() {
-                let arg_s = emit_expr(a, env, None, func_returns, fn_return_type, temp_id)?;
+                let param_ty = params.as_ref().and_then(|ptypes| ptypes.get(i));
                 if i == 0 {
                     if let Some(ref ptypes) = params {
                         let arg_ty = expr_type(a, env, func_returns);
                         match ptypes.first() {
                             Some(Type::Pointer(_)) if !arg_ty.is_pointer() => {
+                                let arg_s =
+                                    emit_expr(a, env, None, func_returns, fn_return_type, temp_id)?;
                                 parts.push(format!("&({arg_s})"));
                                 continue;
                             }
                             Some(Type::Struct(_)) if arg_ty.is_pointer() => {
+                                let arg_s =
+                                    emit_expr(a, env, None, func_returns, fn_return_type, temp_id)?;
                                 parts.push(format!("(*({arg_s}))"));
                                 continue;
                             }
@@ -2224,6 +2245,7 @@ fn emit_expr(
                         }
                     }
                 }
+                let arg_s = emit_expr(a, env, param_ty, func_returns, fn_return_type, temp_id)?;
                 parts.push(arg_s);
             }
             format!("{}({})", c_fn(name), parts.join(", "))

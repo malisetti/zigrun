@@ -127,6 +127,9 @@ impl<'a> Lexer<'a> {
         if ch == '"' {
             return self.read_string();
         }
+        if ch == '\'' {
+            return self.read_char();
+        }
         if ch.is_ascii_alphabetic() || ch == '_' {
             return Ok(self.read_ident());
         }
@@ -290,6 +293,43 @@ impl<'a> Lexer<'a> {
             self.pos += 1;
         }
         Err("unterminated string literal".to_string())
+    }
+
+    fn read_char(&mut self) -> Result<TokenKind, String> {
+        self.pos += 1; // opening '
+        if self.pos >= self.input.len() {
+            return Err("unterminated character literal".to_string());
+        }
+        let value = if self.input[self.pos] == b'\\' {
+            self.pos += 1;
+            if self.pos >= self.input.len() {
+                return Err("unterminated character literal".to_string());
+            }
+            let esc = self.input[self.pos] as char;
+            self.pos += 1;
+            match esc {
+                'n' => b'\n',
+                't' => b'\t',
+                'r' => b'\r',
+                '0' => b'\0',
+                '\\' => b'\\',
+                '\'' => b'\'',
+                other if other.is_ascii() => other as u8,
+                other => return Err(format!("unsupported character escape {other:?}")),
+            }
+        } else {
+            let ch = self.input[self.pos] as char;
+            if !ch.is_ascii() {
+                return Err(format!("unsupported non-ASCII character literal {ch:?}"));
+            }
+            self.pos += 1;
+            ch as u8
+        };
+        if self.pos >= self.input.len() || self.input[self.pos] != b'\'' {
+            return Err("character literal must contain exactly one byte".to_string());
+        }
+        self.pos += 1;
+        Ok(TokenKind::Int(value as u64))
     }
 
     fn read_int(&mut self) -> Result<TokenKind, String> {
