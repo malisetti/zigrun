@@ -335,6 +335,7 @@ impl Parser {
                 self.expect(TokenKind::Colon)?;
                 let ty = self.parse_type()?;
                 fields.push((field, ty));
+                self.structs.insert(name.clone(), fields.clone());
                 if self.check(&TokenKind::Comma) {
                     self.advance();
                 }
@@ -947,13 +948,10 @@ impl Parser {
         }
         if let Expr::FieldAccess { base, field } = &target_expr {
             if self.check(&TokenKind::LParen) {
-                let struct_name = match base.as_ref() {
-                    Expr::Var(v) => self
-                        .locals
-                        .get(v)
-                        .and_then(|t| t.struct_name().map(str::to_string)),
-                    _ => None,
-                };
+                let struct_name = self
+                    .infer_expr_type_local(base)
+                    .struct_name()
+                    .map(str::to_string);
                 if let Some(sn) = struct_name {
                     if self
                         .struct_methods
@@ -1446,13 +1444,10 @@ impl Parser {
                 }
                 // Check for method call: expr.method(args)
                 if self.check(&TokenKind::LParen) {
-                    let struct_name = match &expr {
-                        Expr::Var(v) => self
-                            .locals
-                            .get(v)
-                            .and_then(|t| t.struct_name().map(str::to_string)),
-                        _ => None,
-                    };
+                    let struct_name = self
+                        .infer_expr_type_local(&expr)
+                        .struct_name()
+                        .map(str::to_string);
                     if let Some(sn) = struct_name {
                         if self
                             .struct_methods
