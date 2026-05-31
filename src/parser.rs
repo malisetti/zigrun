@@ -806,7 +806,7 @@ impl Parser {
                 self.advance();
                 (None, false)
             }
-            TokenKind::PlusAssign => {
+            TokenKind::PlusAssign | TokenKind::PlusPercentAssign => {
                 self.advance();
                 (Some(BinOp::Add), true)
             }
@@ -879,7 +879,7 @@ impl Parser {
         if let TokenKind::Ident(name) = self.peek_kind().clone() {
             self.advance();
             let compound = match self.peek_kind() {
-                TokenKind::PlusAssign => Some(BinOp::Add),
+                TokenKind::PlusAssign | TokenKind::PlusPercentAssign => Some(BinOp::Add),
                 TokenKind::MinusAssign => Some(BinOp::Sub),
                 TokenKind::StarAssign => Some(BinOp::Mul),
                 TokenKind::SlashAssign => Some(BinOp::Div),

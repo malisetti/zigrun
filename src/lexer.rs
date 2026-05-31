@@ -55,6 +55,7 @@ pub enum TokenKind {
     Ne,
     Assign,
     PlusAssign,
+    PlusPercentAssign,
     MinusAssign,
     StarAssign,
     SlashAssign,
@@ -141,7 +142,13 @@ impl<'a> Lexer<'a> {
                 }
             }
             '+' => {
-                if self.eat('=') {
+                if self.eat('%') {
+                    if self.eat('=') {
+                        TokenKind::PlusPercentAssign
+                    } else {
+                        return Err("unexpected '+%' (only '+%=' is supported)".to_string());
+                    }
+                } else if self.eat('=') {
                     TokenKind::PlusAssign
                 } else {
                     TokenKind::Plus
