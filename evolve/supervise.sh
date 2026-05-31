@@ -26,6 +26,8 @@ AGENT_PREFIX="${AGENT_PREFIX:-agent-b147cc87}"
 NFLTR_REPO_URL="$(git -C "$REPO_ROOT" config --get remote.origin.url)"
 export NFLTR_REPO_URL
 BATCH_SIZE="${FRONTIER_BATCH_SIZE:-3}"
+FRONTIER_ROOT_TASK_ID="${FRONTIER_ROOT_TASK_ID:-zigrun-supervise-$(date -u +%Y%m%dT%H%M%SZ)}"
+export FRONTIER_ROOT_TASK_ID
 start=$(date +%s)
 end=$(( start + BUDGET ))
 now() { date +%H:%M; }
@@ -147,7 +149,7 @@ frontier_driver_up() {
 }
 
 last=$(landed); stall=0
-echo "[$(now)] supervisor start: landed=$last budget=${BUDGET}s ($(( BUDGET / 3600 ))h) fleet=$FLEET nfltr=$NF ends=$(date -r "$end" '+%Y-%m-%d %H:%M')"
+echo "[$(now)] supervisor start: landed=$last budget=${BUDGET}s ($(( BUDGET / 3600 ))h) fleet=$FLEET nfltr=$NF root=$FRONTIER_ROOT_TASK_ID ends=$(date -r "$end" '+%Y-%m-%d %H:%M')"
 
 while [ "$(date +%s)" -lt "$end" ]; do
   fleet_up

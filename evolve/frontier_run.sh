@@ -18,6 +18,8 @@ DEFAULT_IMPL_READY_COMMAND='git fetch -q origin +refs/heads/main:refs/remotes/or
 IMPL_READY_COMMAND="${FRONTIER_IMPL_READY_COMMAND:-$DEFAULT_IMPL_READY_COMMAND}"
 IMPL_WORKERS="${ZIGRUN_IMPL_WORKERS:-agent-b147cc87.native-actor-0,agent-b147cc87.native-actor-1,agent-b147cc87.native-actor-2,agent-b147cc87.native-actor-3,agent-b147cc87.native-actor-4,agent-b147cc87.native-actor-5}"
 INTEGRATOR_WORKER="${ZIGRUN_INTEGRATOR_WORKER:-agent-b147cc87.local-integrator}"
+FRONTIER_ROOT_TASK_ID="${FRONTIER_ROOT_TASK_ID:-zigrun-frontier-$(date -u +%Y%m%dT%H%M%SZ)}"
+export FRONTIER_ROOT_TASK_ID
 
 if [ -f "${HOME}/.nfltr_new_key" ]; then
   export NFLTR_API_KEY="$(tr -d '[:space:]' < "${HOME}/.nfltr_new_key")"
@@ -36,6 +38,7 @@ FRONTIER_FLAGS=(
   --impl-ready-poll "$IMPL_READY_POLL"
   --impl-workers "$IMPL_WORKERS"
   --integrator-worker "$INTEGRATOR_WORKER"
+  --root-task-id "$FRONTIER_ROOT_TASK_ID"
   --batch-size "$BATCH_SIZE"
   --concurrency "$CONCURRENCY"
   --acceptance-lapse-ms 600000
@@ -55,6 +58,7 @@ run_batch() {
 }
 
 deadline=$(( $(date +%s) + BUDGET_SEC ))
+echo "frontier_run: lineage root ${FRONTIER_ROOT_TASK_ID}"
 prune_stale_slots
 
 while [ "$(date +%s)" -lt "$deadline" ]; do
