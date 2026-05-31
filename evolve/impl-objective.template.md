@@ -25,5 +25,6 @@ zigrun/oracle/check.sh AND zigrun/oracle/diff.sh.
 VERIFY: `bash zigrun/oracle/diff.sh ${item_id}` DIFFERENTIAL GREEN; full
 `bash zigrun/oracle/diff.sh` stays green.
 
-Commit ALL changes. Push to `zigrun-${item_id}` on origin. No PR. The operator-side
-gate and integrator fetch your branch — do not merge to main yourself.
+Commit ALL changes. Push with `git push --force-with-lease origin zigrun-${item_id}`.
+No PR. The operator-side gate and integrator fetch your branch — do not merge to
+main yourself.
