@@ -418,6 +418,8 @@ pub enum Expr {
     StringLit(String),
     Bool(bool),
     Null,
+    /// A comptime-only type value, e.g. a function returning `struct { ... }`.
+    TypeValue(Type),
     /// `std.debug.print(fmt, .{{}})` lowered to fprintf(stderr, …).
     DebugPrint {
         format: String,

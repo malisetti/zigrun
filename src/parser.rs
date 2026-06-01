@@ -34,6 +34,7 @@ pub struct Parser {
     enums: HashMap<String, Vec<String>>,
     error_sets: HashMap<String, Vec<String>>,
     structs: HashMap<String, Vec<(String, Type)>>,
+    struct_defs: HashMap<String, StructDef>,
     unions: HashMap<String, Vec<UnionVariant>>,
     functions: HashMap<String, Type>,
     function_params: HashMap<String, Vec<Type>>,
@@ -43,6 +44,7 @@ pub struct Parser {
     current_comptime_int_params: HashSet<String>,
     specialized_functions: Vec<Function>,
     comptime_ints: HashMap<String, i64>,
+    type_aliases: HashMap<String, Type>,
     globals: HashMap<String, Type>,
     locals: HashMap<String, Type>,
     expr_enum_hint: Option<String>,
@@ -51,7 +53,9 @@ pub struct Parser {
     struct_methods: HashMap<String, Vec<String>>,
     packed_structs: std::collections::HashSet<String>,
     anon_structs: Vec<StructDef>,
+    generic_anon_structs: HashMap<String, StructDef>,
     anon_struct_id: usize,
+    current_this_type: Option<String>,
 }
 
 impl Parser {
@@ -63,6 +67,7 @@ impl Parser {
             enums: HashMap::new(),
             error_sets: HashMap::new(),
             structs: HashMap::new(),
+            struct_defs: HashMap::new(),
             unions: HashMap::new(),
             functions: HashMap::new(),
             function_params: HashMap::new(),
@@ -72,6 +77,7 @@ impl Parser {
             current_comptime_int_params: HashSet::new(),
             specialized_functions: Vec::new(),
             comptime_ints: HashMap::new(),
+            type_aliases: HashMap::new(),
             globals: HashMap::new(),
             locals: HashMap::new(),
             expr_enum_hint: None,
@@ -80,7 +86,9 @@ impl Parser {
             struct_methods: HashMap::new(),
             packed_structs: std::collections::HashSet::new(),
             anon_structs: Vec::new(),
+            generic_anon_structs: HashMap::new(),
             anon_struct_id: 0,
+            current_this_type: None,
         }
     }
 
@@ -105,6 +113,7 @@ impl Parser {
                             self.comptime_functions.insert(m.name.clone(), m.clone());
                             functions.push(m.clone());
                         }
+                        self.struct_defs.insert(s.name.clone(), s.clone());
                         struct_defs.push(s);
                     }
                     TopLevelDecl::Union(u) => union_defs.push(u),
@@ -365,18 +374,21 @@ impl Parser {
             return Err(format!("struct {name} has no fields"));
         }
         self.structs.insert(name.clone(), fields.clone());
-        Ok(StructDef {
+        let def = StructDef {
             name,
             packed,
             fields,
             methods,
-        })
+        };
+        self.struct_defs.insert(def.name.clone(), def.clone());
+        Ok(def)
     }
 
     fn parse_struct_method(&mut self, struct_name: &str) -> Result<crate::ast::Function, String> {
         self.expect(TokenKind::Fn)?;
         let short_name = self.expect_ident()?;
         let mangled_name = format!("{}_{}", struct_name, short_name);
+        let saved_this = self.current_this_type.replace(struct_name.to_string());
         self.expect(TokenKind::LParen)?;
         let mut params = Vec::new();
         if !self.check(&TokenKind::RParen) {
@@ -411,6 +423,7 @@ impl Parser {
             params.iter().map(|(_, ty)| ty.clone()).collect(),
         );
         let body = self.parse_block()?;
+        self.current_this_type = saved_this;
         Ok(crate::ast::Function {
             name: mangled_name,
             params,
@@ -497,6 +510,20 @@ impl Parser {
         if self.check(&TokenKind::Struct) {
             return self.parse_anonymous_struct_type();
         }
+        if self.check(&TokenKind::At) {
+            self.advance();
+            let builtin = self.expect_ident()?;
+            if builtin == "This" {
+                self.expect(TokenKind::LParen)?;
+                self.expect(TokenKind::RParen)?;
+                return self
+                    .current_this_type
+                    .clone()
+                    .map(Type::Struct)
+                    .ok_or_else(|| "@This() is only supported inside struct methods".to_string());
+            }
+            return Err(format!("unsupported type builtin @{builtin}"));
+        }
         if self.check(&TokenKind::LBracket) {
             self.advance();
             if self.check(&TokenKind::RBracket) {
@@ -559,6 +586,9 @@ impl Parser {
         if self.structs.contains_key(&name) {
             return Ok(Type::Struct(name));
         }
+        if let Some(ty) = self.type_aliases.get(&name) {
+            return Ok(ty.clone());
+        }
         if self.unions.contains_key(&name) {
             return Ok(Type::Union(name));
         }
@@ -578,26 +608,50 @@ impl Parser {
         self.anon_struct_id += 1;
         self.structs.insert(name.clone(), Vec::new());
         let mut fields = Vec::new();
+        let mut methods = Vec::new();
         while !self.check(&TokenKind::RBrace) && !self.check(&TokenKind::Eof) {
+            if self.check(&TokenKind::Fn) {
+                let method = self.parse_struct_method(&name)?;
+                let short_name = method
+                    .name
+                    .strip_prefix(&format!("{}_", name))
+                    .unwrap_or(&method.name)
+                    .to_string();
+                self.struct_methods
+                    .entry(name.clone())
+                    .or_default()
+                    .push(short_name);
+                self.functions
+                    .insert(method.name.clone(), method.return_type.clone());
+                methods.push(method);
+                continue;
+            }
             let field = self.expect_ident()?;
             self.expect(TokenKind::Colon)?;
             let ty = self.parse_type()?;
             fields.push((field, ty));
+            self.structs.insert(name.clone(), fields.clone());
             if self.check(&TokenKind::Comma) {
                 self.advance();
             }
         }
         self.expect(TokenKind::RBrace)?;
-        if fields.is_empty() {
+        if fields.is_empty() && methods.is_empty() {
             return Err("anonymous struct type has no fields".to_string());
         }
         self.structs.insert(name.clone(), fields.clone());
-        self.anon_structs.push(StructDef {
+        let def = StructDef {
             name: name.clone(),
             packed: false,
             fields,
-            methods: Vec::new(),
-        });
+            methods,
+        };
+        self.struct_defs.insert(name.clone(), def.clone());
+        if struct_def_has_generic(&def) {
+            self.generic_anon_structs.insert(name.clone(), def);
+        } else {
+            self.anon_structs.push(def);
+        }
         Ok(Type::Struct(name))
     }
 
@@ -635,6 +689,14 @@ impl Parser {
                 self.expr_enum_hint = None;
                 self.expr_union_hint = None;
                 self.expr_type_hint = None;
+                if is_const {
+                    if let Expr::TypeValue(alias_ty) = &value {
+                        self.expect(TokenKind::Semicolon)?;
+                        self.type_aliases.insert(name.clone(), alias_ty.clone());
+                        self.locals.insert(name, Type::Type);
+                        return Ok(Stmt::Expr(Expr::Int(0)));
+                    }
+                }
                 let ty = ty.unwrap_or_else(|| {
                     infer_expr_type(
                         &value,
@@ -1837,6 +1899,10 @@ impl Parser {
                 })
             }
             TokenKind::Switch => self.parse_switch(),
+            TokenKind::Struct => {
+                let ty = self.parse_anonymous_struct_type()?;
+                Ok(Expr::TypeValue(ty))
+            }
             TokenKind::LParen => {
                 self.advance();
                 let e = self.parse_expr()?;
@@ -1846,15 +1912,23 @@ impl Parser {
             TokenKind::Ident(name) => {
                 self.advance();
                 if self.check(&TokenKind::LBrace) {
-                    if self.structs.contains_key(&name) {
+                    let aliased_struct = self.type_aliases.get(&name).and_then(|ty| {
+                        if let Type::Struct(struct_name) = ty {
+                            Some(struct_name.clone())
+                        } else {
+                            None
+                        }
+                    });
+                    if self.structs.contains_key(&name) || aliased_struct.is_some() {
                         self.advance();
+                        let struct_name = aliased_struct.unwrap_or_else(|| name.clone());
                         let saved = self.expr_type_hint.clone();
-                        self.expr_type_hint = Some(Type::Struct(name.clone()));
+                        self.expr_type_hint = Some(Type::Struct(struct_name.clone()));
                         let fields = self.parse_struct_literal_fields()?;
                         self.expr_type_hint = saved;
                         self.expect(TokenKind::RBrace)?;
                         Ok(Expr::StructLiteral {
-                            struct_name: name,
+                            struct_name,
                             fields,
                         })
                     } else if self.unions.contains_key(&name) {
@@ -1942,6 +2016,70 @@ impl Parser {
         }
 
         let spec_name = format!("{}__{}", name, mangled_parts.join("__"));
+        if template.return_type == Type::Type {
+            if !runtime_args.is_empty() {
+                return Err(format!(
+                    "type factory {name:?} cannot have runtime arguments in this subset"
+                ));
+            }
+            let returned_ty = template
+                .body
+                .iter()
+                .find_map(|stmt| match stmt {
+                    Stmt::Return(Expr::TypeValue(ty)) => Some(ty.clone()),
+                    _ => None,
+                })
+                .ok_or_else(|| format!("type factory {name:?} must return a type value"))?;
+            let Type::Struct(template_struct_name) = returned_ty else {
+                return Err(format!(
+                    "type factory {name:?} currently supports anonymous structs only"
+                ));
+            };
+            let concrete_name = format!("{spec_name}_type");
+            if !self.structs.contains_key(&concrete_name) {
+                let template_struct = self
+                    .generic_anon_structs
+                    .get(&template_struct_name)
+                    .or_else(|| self.struct_defs.get(&template_struct_name))
+                    .cloned()
+                    .ok_or_else(|| {
+                        format!("unknown returned struct template {template_struct_name:?}")
+                    })?;
+                let mut concrete = substitute_struct_def(
+                    &template_struct,
+                    &type_args,
+                    &int_args,
+                    &template_struct_name,
+                    &concrete_name,
+                );
+                for method in &mut concrete.methods {
+                    let short_name = method
+                        .name
+                        .strip_prefix(&format!("{}_", concrete_name))
+                        .unwrap_or(&method.name)
+                        .to_string();
+                    self.struct_methods
+                        .entry(concrete_name.clone())
+                        .or_default()
+                        .push(short_name);
+                    self.functions
+                        .insert(method.name.clone(), method.return_type.clone());
+                    self.function_params.insert(
+                        method.name.clone(),
+                        method.params.iter().map(|(_, ty)| ty.clone()).collect(),
+                    );
+                    self.comptime_functions
+                        .insert(method.name.clone(), method.clone());
+                    self.specialized_functions.push(method.clone());
+                }
+                self.structs
+                    .insert(concrete_name.clone(), concrete.fields.clone());
+                self.struct_defs
+                    .insert(concrete_name.clone(), concrete.clone());
+                self.anon_structs.push(concrete);
+            }
+            return Ok(Expr::TypeValue(Type::Struct(concrete_name)));
+        }
         if !self.functions.contains_key(&spec_name) {
             let mut spec = template.clone();
             spec.name = spec_name.clone();
@@ -2677,7 +2815,25 @@ fn is_generic_function(f: &Function) -> bool {
 fn expr_as_type(expr: &Expr) -> Option<Type> {
     match expr {
         Expr::Var(name) => Type::from_name(name),
+        Expr::TypeValue(ty) => Some(ty.clone()),
         _ => None,
+    }
+}
+
+fn struct_def_has_generic(def: &StructDef) -> bool {
+    def.fields.iter().any(|(_, ty)| type_has_generic(ty))
+        || def.methods.iter().any(|m| {
+            type_has_generic(&m.return_type) || m.params.iter().any(|(_, ty)| type_has_generic(ty))
+        })
+}
+
+fn type_has_generic(ty: &Type) -> bool {
+    match ty {
+        Type::Generic(_) => true,
+        Type::Array { elem, .. } | Type::Slice { elem, .. } => type_has_generic(elem),
+        Type::ErrorUnion { payload, .. } => type_has_generic(payload),
+        Type::Optional(inner) | Type::Pointer(inner) => type_has_generic(inner),
+        _ => false,
     }
 }
 
@@ -2825,6 +2981,84 @@ fn substitute_type(
             Type::Pointer(Box::new(substitute_type(inner, type_args, int_args)))
         }
         _ => ty.clone(),
+    }
+}
+
+fn replace_struct_type(ty: &Type, old_name: &str, new_name: &str) -> Type {
+    match ty {
+        Type::Struct(name) if name == old_name => Type::Struct(new_name.to_string()),
+        Type::Array { len, elem } => Type::Array {
+            len: len.clone(),
+            elem: Box::new(replace_struct_type(elem, old_name, new_name)),
+        },
+        Type::Slice { const_, elem } => Type::Slice {
+            const_: *const_,
+            elem: Box::new(replace_struct_type(elem, old_name, new_name)),
+        },
+        Type::ErrorUnion { err_set, payload } => Type::ErrorUnion {
+            err_set: err_set.clone(),
+            payload: Box::new(replace_struct_type(payload, old_name, new_name)),
+        },
+        Type::Optional(inner) => {
+            Type::Optional(Box::new(replace_struct_type(inner, old_name, new_name)))
+        }
+        Type::Pointer(inner) => {
+            Type::Pointer(Box::new(replace_struct_type(inner, old_name, new_name)))
+        }
+        _ => ty.clone(),
+    }
+}
+
+fn substitute_struct_def(
+    def: &StructDef,
+    type_args: &HashMap<String, Type>,
+    int_args: &HashMap<String, usize>,
+    old_name: &str,
+    new_name: &str,
+) -> StructDef {
+    let fields = def
+        .fields
+        .iter()
+        .map(|(name, ty)| {
+            let ty = substitute_type(ty, type_args, int_args);
+            (name.clone(), replace_struct_type(&ty, old_name, new_name))
+        })
+        .collect();
+    let methods = def
+        .methods
+        .iter()
+        .map(|method| {
+            let short_name = method
+                .name
+                .strip_prefix(&format!("{old_name}_"))
+                .unwrap_or(&method.name);
+            Function {
+                name: format!("{new_name}_{short_name}"),
+                params: method
+                    .params
+                    .iter()
+                    .map(|(name, ty)| {
+                        let ty = substitute_type(ty, type_args, int_args);
+                        (name.clone(), replace_struct_type(&ty, old_name, new_name))
+                    })
+                    .collect(),
+                return_type: {
+                    let ty = substitute_type(&method.return_type, type_args, int_args);
+                    replace_struct_type(&ty, old_name, new_name)
+                },
+                body: method
+                    .body
+                    .iter()
+                    .map(|stmt| substitute_stmt(stmt, type_args, int_args))
+                    .collect(),
+            }
+        })
+        .collect();
+    StructDef {
+        name: new_name.to_string(),
+        packed: def.packed,
+        fields,
+        methods,
     }
 }
 
@@ -3099,6 +3333,7 @@ fn substitute_expr(
             then_expr: Box::new(substitute_expr(then_expr, type_args, int_args)),
             else_expr: Box::new(substitute_expr(else_expr, type_args, int_args)),
         },
+        Expr::TypeValue(ty) => Expr::TypeValue(substitute_type(ty, type_args, int_args)),
         _ => expr.clone(),
     }
 }
@@ -3115,6 +3350,7 @@ fn infer_expr_type(
         Expr::Int(_) => Type::Int(IntType::U8),
         Expr::Bool(_) => Type::Bool,
         Expr::Null => Type::Int(IntType::U8),
+        Expr::TypeValue(_) => Type::Type,
         Expr::Undefined => Type::Int(IntType::U8),
         Expr::Var(name) => locals.get(name).cloned().unwrap_or(Type::Int(IntType::U8)),
         Expr::Call { name, .. } => functions
