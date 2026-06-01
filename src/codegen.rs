@@ -761,25 +761,56 @@ fn collect_slice_types(program: &Program) -> Vec<Type> {
             }
         }
     };
+    for s in &program.structs {
+        for (_, ty) in &s.fields {
+            collect_slices_in_type(ty, &mut add);
+        }
+    }
+    for u in &program.unions {
+        for v in &u.variants {
+            if let Some(payload) = &v.payload {
+                collect_slices_in_type(payload, &mut add);
+            }
+        }
+    }
     for f in &program.functions {
-        add(&f.return_type);
+        collect_slices_in_type(&f.return_type, &mut add);
         for (_, ty) in &f.params {
-            add(ty);
+            collect_slices_in_type(ty, &mut add);
         }
         collect_slices_in_stmts(&f.body, &mut add);
     }
     for g in &program.globals {
-        add(&g.ty);
+        collect_slices_in_type(&g.ty, &mut add);
         collect_slices_in_expr(&g.value, &mut add);
     }
     out
+}
+
+fn collect_slices_in_type(ty: &Type, add: &mut dyn FnMut(&Type)) {
+    add(ty);
+    match ty {
+        Type::Array { elem, .. } | Type::Slice { elem, .. } => {
+            collect_slices_in_type(elem, add);
+        }
+        Type::ErrorUnion { payload, .. } => collect_slices_in_type(payload, add),
+        Type::Optional(inner) | Type::Pointer(inner) => collect_slices_in_type(inner, add),
+        Type::Bool
+        | Type::Int(_)
+        | Type::Enum(_)
+        | Type::Struct(_)
+        | Type::Union(_)
+        | Type::Type
+        | Type::Generic(_)
+        | Type::Void => {}
+    }
 }
 
 fn collect_slices_in_stmts(stmts: &[Stmt], add: &mut dyn FnMut(&Type)) {
     for s in stmts {
         match s {
             Stmt::Let { ty, value, .. } => {
-                add(ty);
+                collect_slices_in_type(ty, add);
                 collect_slices_in_expr(value, add);
             }
             Stmt::Assign { value, .. } => collect_slices_in_expr(value, add),
@@ -2707,10 +2738,18 @@ fn emit_expr(
             let tag = c_union_tag(&udef, variant);
             let mut init = format!("({un}){{ .tag = {tag}");
             if let Some(val) = value {
+                let payload_ty = union_variant_payload_type(&udef, variant)?;
                 let _ = write!(
                     &mut init,
                     ", .payload.{variant} = {}",
-                    emit_expr(val, env, None, func_returns, fn_return_type, temp_id)?
+                    emit_expr(
+                        val,
+                        env,
+                        Some(&payload_ty),
+                        func_returns,
+                        fn_return_type,
+                        temp_id
+                    )?
                 );
             }
             init.push_str(" }");
@@ -3024,24 +3063,34 @@ fn emit_union_switch(
         };
         let udef = lookup_union(union_name).ok_or_else(|| format!("unknown union {union_name}"))?;
         let tag = c_union_tag(&udef, variant);
-        let arm_expr = emit_expr(
-            &arm.expr,
-            env,
-            Some(&result_ty),
-            func_returns,
-            fn_return_type,
-            temp_id,
-        )?;
+        let mut arm_env = env.clone();
         if let Some(cap) = capture {
             let payload_ty = union_variant_payload_type(&udef, variant)?;
             let cap_ct = c_type(&payload_ty);
             let payload = union_payload_access(s, variant);
             let bind = format!("{cap_ct} {cap} = {payload}");
+            arm_env.insert(cap.clone(), payload_ty);
+            let arm_expr = emit_expr(
+                &arm.expr,
+                &arm_env,
+                Some(&result_ty),
+                func_returns,
+                fn_return_type,
+                temp_id,
+            )?;
             let _ = writeln!(
                 out,
                 "    if (({s}).tag == {tag}) {{ {bind}; _zig_switch_result = {arm_expr}; }}"
             );
         } else {
+            let arm_expr = emit_expr(
+                &arm.expr,
+                &arm_env,
+                Some(&result_ty),
+                func_returns,
+                fn_return_type,
+                temp_id,
+            )?;
             let _ = writeln!(
                 out,
                 "    if (({s}).tag == {tag}) {{ _zig_switch_result = {arm_expr}; }}"

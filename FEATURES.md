@@ -12,8 +12,8 @@ zigrun compiles a **subset** of Zig to C. This scorecard tracks coverage
 - ✅ `u8` · ⚠️ unsigned widths `u16`/`u32` + `@intCast` (differential-verified incl an uncovered u32 case)
 - ❌ signed ints `i8`…`i64` (zigrun ERRORS — diverges from real zig, surfaced by the differential probe) · ❌ `u64`/`usize`
 - ❌ `bool` (currently modeled as `u8`) · ❌ `f32`/`f64` · ❌ `void`/`noreturn`
-- ❌ arrays · ❌ slices · ❌ pointers · ❌ optionals `?T` · ❌ error unions `!T`
-- ❌ `struct` · ❌ `enum` · ❌ `union` · ❌ tagged unions
+- ⚠️ arrays · ⚠️ slices (including `[]const u8` tagged-union payloads) · ⚠️ pointers · ⚠️ optionals `?T` · ⚠️ error unions `!T`
+- ⚠️ `struct` · ⚠️ `enum` · ⚠️ `union` · ⚠️ tagged unions
 - ⚠️ `comptime_int` (integer literals only)
 
 ## Functions
