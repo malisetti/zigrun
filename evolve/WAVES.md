@@ -87,6 +87,11 @@ durable state — stop and resume any time.
 - [x] optional_s1 | oracle/optional_s1.zig | ladder step for 'optional' (real zig=42) (landed via orch integrator vs real zig)
 
 ## Frontier (pending — each is real Zig that zigrun must learn to match)
+- [ ] comptime_type_s1 | oracle/pending/comptime_type_s1.zig | comptime generic type parameter: `fn twice(comptime T: type, x: T) T` should monomorphize for multiple integer widths
+- [ ] comptime_array_s1 | oracle/pending/comptime_array_s1.zig | comptime integer parameter in an array type: `[N]u8` parameter + `.len`-derived comptime argument
+- [ ] comptime_type_s2 | oracle/pending/comptime_type_s2.zig | comptime function returning `type`, then use the returned type in a declaration
+- [ ] comptime_struct_s1 | oracle/pending/comptime_struct_s1.zig | comptime-generated anonymous struct type with methods, instantiated from `Pair(u8)`
+- [ ] comptime_block_s1 | oracle/pending/comptime_block_s1.zig | comptime block evaluation with local mutation, while loop, labeled break, and array length use
 - [ ] bitwise | oracle/pending/bitwise.zig | self-discovered atomic gap (real zig=35)
 - [ ] for | oracle/pending/for.zig | self-discovered atomic gap (real zig=39)
 - [ ] struct | oracle/pending/struct.zig | self-discovered atomic gap (real zig=42)
