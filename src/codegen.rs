@@ -1007,6 +1007,8 @@ fn c_type(ty: &Type) -> String {
         Type::ErrorUnion { err_set, payload } => c_error_union_name(err_set, payload),
         Type::Optional(inner) => c_optional_name(inner),
         Type::Pointer(inner) => format!("{} *", c_type(inner)),
+        Type::Type => "void *".to_string(),
+        Type::Generic(name) => name.clone(),
         Type::Void => "void".to_string(),
     }
 }

@@ -24,6 +24,11 @@ pub enum Type {
     },
     Optional(Box<Type>),
     Pointer(Box<Type>),
+    /// Zig's comptime `type` value, used for generic function parameters before
+    /// specialization.
+    Type,
+    /// A named comptime type parameter inside an unspecialized generic function.
+    Generic(String),
     Void,
 }
 
@@ -50,7 +55,7 @@ impl Type {
             Type::ErrorUnion { payload, .. } => payload.int_type(),
             Type::Optional(inner) => inner.int_type(),
             Type::Pointer(inner) => inner.int_type(),
-            Type::Void => None,
+            Type::Type | Type::Generic(_) | Type::Void => None,
         }
     }
 

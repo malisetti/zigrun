@@ -24,7 +24,7 @@ use crate::ast::{
     Program, Stmt, StructDef, SwitchArm, SwitchStmtArm, SwitchTag, Type, UnionDef, UnionVariant,
 };
 use crate::lexer::{Token, TokenKind};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 pub struct Parser {
     tokens: Vec<Token>,
@@ -37,6 +37,9 @@ pub struct Parser {
     functions: HashMap<String, Type>,
     function_params: HashMap<String, Vec<Type>>,
     comptime_functions: HashMap<String, Function>,
+    generic_functions: HashMap<String, Function>,
+    current_type_params: HashSet<String>,
+    specialized_functions: Vec<Function>,
     comptime_ints: HashMap<String, i64>,
     globals: HashMap<String, Type>,
     locals: HashMap<String, Type>,
@@ -62,6 +65,9 @@ impl Parser {
             functions: HashMap::new(),
             function_params: HashMap::new(),
             comptime_functions: HashMap::new(),
+            generic_functions: HashMap::new(),
+            current_type_params: HashSet::new(),
+            specialized_functions: Vec::new(),
             comptime_ints: HashMap::new(),
             globals: HashMap::new(),
             locals: HashMap::new(),
@@ -106,11 +112,20 @@ impl Parser {
                 globals.push(global);
             } else {
                 let f = self.parse_function()?;
-                self.functions.insert(f.name.clone(), f.return_type.clone());
-                self.comptime_functions.insert(f.name.clone(), f.clone());
-                functions.push(f);
+                if is_generic_function(&f) {
+                    self.generic_functions.insert(f.name.clone(), f.clone());
+                    self.function_params.insert(
+                        f.name.clone(),
+                        f.params.iter().map(|(_, ty)| ty.clone()).collect(),
+                    );
+                } else {
+                    self.functions.insert(f.name.clone(), f.return_type.clone());
+                    self.comptime_functions.insert(f.name.clone(), f.clone());
+                    functions.push(f);
+                }
             }
         }
+        functions.append(&mut self.specialized_functions);
         if functions.is_empty() {
             return Err("empty program: no functions".to_string());
         }
@@ -407,16 +422,24 @@ impl Parser {
         }
         self.expect(TokenKind::Fn)?;
         let name = self.expect_ident()?;
+        let saved_type_params = self.current_type_params.clone();
+        self.current_type_params.clear();
         self.expect(TokenKind::LParen)?;
         let mut params = Vec::new();
         if !self.check(&TokenKind::RParen) {
             loop {
-                if self.check(&TokenKind::Comptime) {
+                let is_comptime = if self.check(&TokenKind::Comptime) {
                     self.advance();
-                }
+                    true
+                } else {
+                    false
+                };
                 let p = self.expect_ident()?;
                 self.expect(TokenKind::Colon)?;
                 let ty = self.parse_type()?;
+                if is_comptime && ty == Type::Type {
+                    self.current_type_params.insert(p.clone());
+                }
                 params.push((p, ty));
                 if self.check(&TokenKind::Comma) {
                     self.advance();
@@ -441,6 +464,7 @@ impl Parser {
             params.iter().map(|(_, ty)| ty.clone()).collect(),
         );
         let body = self.parse_block()?;
+        self.current_type_params = saved_type_params;
         Ok(Function {
             name,
             params,
@@ -527,6 +551,12 @@ impl Parser {
         }
         if self.unions.contains_key(&name) {
             return Ok(Type::Union(name));
+        }
+        if name == "type" {
+            return Ok(Type::Type);
+        }
+        if self.current_type_params.contains(&name) {
+            return Ok(Type::Generic(name));
         }
         Type::from_name(&name).ok_or_else(|| format!("unsupported type {name:?}"))
     }
@@ -1845,6 +1875,9 @@ impl Parser {
                         }
                     }
                     self.expect(TokenKind::RParen)?;
+                    if self.generic_functions.contains_key(&name) {
+                        return self.specialize_generic_call(&name, args);
+                    }
                     Ok(Expr::Call { name, args })
                 } else {
                     Ok(Expr::Var(name))
@@ -1852,6 +1885,79 @@ impl Parser {
             }
             other => Err(format!("expected an expression, found {other:?}")),
         }
+    }
+
+    fn specialize_generic_call(&mut self, name: &str, args: Vec<Expr>) -> Result<Expr, String> {
+        let template = self
+            .generic_functions
+            .get(name)
+            .cloned()
+            .ok_or_else(|| format!("unknown generic function {name:?}"))?;
+        if template.params.len() != args.len() {
+            return Err(format!(
+                "function {name:?} expects {} arguments, got {}",
+                template.params.len(),
+                args.len()
+            ));
+        }
+
+        let mut type_args = HashMap::new();
+        let mut runtime_args = Vec::new();
+        let mut mangled_parts = Vec::new();
+        for ((param_name, param_ty), arg) in template.params.iter().zip(args.into_iter()) {
+            if *param_ty == Type::Type {
+                let ty = expr_as_type(&arg).ok_or_else(|| {
+                    format!("comptime type parameter {param_name:?} requires a type argument")
+                })?;
+                mangled_parts.push(type_mangle(&ty));
+                type_args.insert(param_name.clone(), ty);
+            } else {
+                runtime_args.push(arg);
+            }
+        }
+        if type_args.is_empty() {
+            return Ok(Expr::Call {
+                name: name.to_string(),
+                args: runtime_args,
+            });
+        }
+
+        let spec_name = format!("{}__{}", name, mangled_parts.join("__"));
+        if !self.functions.contains_key(&spec_name) {
+            let mut spec = template.clone();
+            spec.name = spec_name.clone();
+            spec.params = spec
+                .params
+                .into_iter()
+                .filter_map(|(p, ty)| {
+                    if ty == Type::Type {
+                        None
+                    } else {
+                        Some((p, substitute_type(&ty, &type_args)))
+                    }
+                })
+                .collect();
+            spec.return_type = substitute_type(&spec.return_type, &type_args);
+            spec.body = spec
+                .body
+                .iter()
+                .map(|s| substitute_stmt(s, &type_args))
+                .collect();
+            self.functions
+                .insert(spec_name.clone(), spec.return_type.clone());
+            self.function_params.insert(
+                spec_name.clone(),
+                spec.params.iter().map(|(_, ty)| ty.clone()).collect(),
+            );
+            self.comptime_functions
+                .insert(spec_name.clone(), spec.clone());
+            self.specialized_functions.push(spec);
+        }
+
+        Ok(Expr::Call {
+            name: spec_name,
+            args: runtime_args,
+        })
     }
 
     fn parse_typed_array_literal(&mut self) -> Result<Expr, String> {
@@ -2525,6 +2631,319 @@ impl Parser {
         if self.pos < self.tokens.len() {
             self.pos += 1;
         }
+    }
+}
+
+fn is_generic_function(f: &Function) -> bool {
+    f.params.iter().any(|(_, ty)| *ty == Type::Type)
+}
+
+fn expr_as_type(expr: &Expr) -> Option<Type> {
+    match expr {
+        Expr::Var(name) => Type::from_name(name),
+        _ => None,
+    }
+}
+
+fn type_mangle(ty: &Type) -> String {
+    match ty {
+        Type::Bool => "bool".to_string(),
+        Type::Int(IntType::U1) => "u1".to_string(),
+        Type::Int(IntType::U2) => "u2".to_string(),
+        Type::Int(IntType::U3) => "u3".to_string(),
+        Type::Int(IntType::U4) => "u4".to_string(),
+        Type::Int(IntType::U5) => "u5".to_string(),
+        Type::Int(IntType::U8) => "u8".to_string(),
+        Type::Int(IntType::U16) => "u16".to_string(),
+        Type::Int(IntType::U32) => "u32".to_string(),
+        Type::Int(IntType::U64) => "u64".to_string(),
+        Type::Int(IntType::I8) => "i8".to_string(),
+        Type::Int(IntType::I16) => "i16".to_string(),
+        Type::Int(IntType::I32) => "i32".to_string(),
+        Type::Int(IntType::I64) => "i64".to_string(),
+        Type::Array { len, elem } => format!("arr{len}_{}", type_mangle(elem)),
+        Type::Slice { const_, elem } => {
+            format!(
+                "slice{}_{}",
+                if *const_ { "c" } else { "" },
+                type_mangle(elem)
+            )
+        }
+        Type::Enum(name) | Type::Struct(name) | Type::Union(name) | Type::Generic(name) => {
+            name.clone()
+        }
+        Type::ErrorUnion { err_set, payload } => {
+            format!("err{err_set}_{}", type_mangle(payload))
+        }
+        Type::Optional(inner) => format!("opt_{}", type_mangle(inner)),
+        Type::Pointer(inner) => format!("ptr_{}", type_mangle(inner)),
+        Type::Type => "type".to_string(),
+        Type::Void => "void".to_string(),
+    }
+}
+
+fn substitute_type(ty: &Type, type_args: &HashMap<String, Type>) -> Type {
+    match ty {
+        Type::Generic(name) => type_args.get(name).cloned().unwrap_or_else(|| ty.clone()),
+        Type::Array { len, elem } => Type::Array {
+            len: *len,
+            elem: Box::new(substitute_type(elem, type_args)),
+        },
+        Type::Slice { const_, elem } => Type::Slice {
+            const_: *const_,
+            elem: Box::new(substitute_type(elem, type_args)),
+        },
+        Type::ErrorUnion { err_set, payload } => Type::ErrorUnion {
+            err_set: err_set.clone(),
+            payload: Box::new(substitute_type(payload, type_args)),
+        },
+        Type::Optional(inner) => Type::Optional(Box::new(substitute_type(inner, type_args))),
+        Type::Pointer(inner) => Type::Pointer(Box::new(substitute_type(inner, type_args))),
+        _ => ty.clone(),
+    }
+}
+
+fn substitute_assign_target(
+    target: &AssignTarget,
+    type_args: &HashMap<String, Type>,
+) -> AssignTarget {
+    match target {
+        AssignTarget::Name(name) => AssignTarget::Name(name.clone()),
+        AssignTarget::Index { base, index } => AssignTarget::Index {
+            base: Box::new(substitute_expr(base, type_args)),
+            index: Box::new(substitute_expr(index, type_args)),
+        },
+        AssignTarget::Field { base, field } => AssignTarget::Field {
+            base: Box::new(substitute_expr(base, type_args)),
+            field: field.clone(),
+        },
+        AssignTarget::Deref(inner) => {
+            AssignTarget::Deref(Box::new(substitute_expr(inner, type_args)))
+        }
+    }
+}
+
+fn substitute_stmt(stmt: &Stmt, type_args: &HashMap<String, Type>) -> Stmt {
+    match stmt {
+        Stmt::Let { name, ty, value } => Stmt::Let {
+            name: name.clone(),
+            ty: substitute_type(ty, type_args),
+            value: substitute_expr(value, type_args),
+        },
+        Stmt::Assign { target, value } => Stmt::Assign {
+            target: substitute_assign_target(target, type_args),
+            value: substitute_expr(value, type_args),
+        },
+        Stmt::Return(expr) => Stmt::Return(substitute_expr(expr, type_args)),
+        Stmt::Expr(expr) => Stmt::Expr(substitute_expr(expr, type_args)),
+        Stmt::If {
+            cond,
+            ok_capture,
+            then_branch,
+            err_capture,
+            else_branch,
+        } => Stmt::If {
+            cond: substitute_expr(cond, type_args),
+            ok_capture: ok_capture.clone(),
+            then_branch: then_branch
+                .iter()
+                .map(|s| substitute_stmt(s, type_args))
+                .collect(),
+            err_capture: err_capture.clone(),
+            else_branch: else_branch
+                .as_ref()
+                .map(|body| body.iter().map(|s| substitute_stmt(s, type_args)).collect()),
+        },
+        Stmt::While {
+            cond,
+            ok_capture,
+            cont,
+            body,
+        } => Stmt::While {
+            cond: substitute_expr(cond, type_args),
+            ok_capture: ok_capture.clone(),
+            cont: cont.as_ref().map(|e| substitute_expr(e, type_args)),
+            body: body.iter().map(|s| substitute_stmt(s, type_args)).collect(),
+        },
+        Stmt::Break { label } => Stmt::Break {
+            label: label.clone(),
+        },
+        Stmt::Continue => Stmt::Continue,
+        Stmt::ForRange {
+            label,
+            capture,
+            start,
+            end,
+            body,
+        } => Stmt::ForRange {
+            label: label.clone(),
+            capture: capture.clone(),
+            start: substitute_expr(start, type_args),
+            end: substitute_expr(end, type_args),
+            body: body.iter().map(|s| substitute_stmt(s, type_args)).collect(),
+        },
+        Stmt::ForArray {
+            label,
+            capture,
+            ptr_capture,
+            idx_capture,
+            array,
+            ptr_iter,
+            body,
+        } => Stmt::ForArray {
+            label: label.clone(),
+            capture: capture.clone(),
+            ptr_capture: *ptr_capture,
+            idx_capture: idx_capture.clone(),
+            array: array.clone(),
+            ptr_iter: *ptr_iter,
+            body: body.iter().map(|s| substitute_stmt(s, type_args)).collect(),
+        },
+        Stmt::Switch { scrutinee, arms } => Stmt::Switch {
+            scrutinee: substitute_expr(scrutinee, type_args),
+            arms: arms
+                .iter()
+                .map(|arm| SwitchStmtArm {
+                    tag: arm.tag.clone(),
+                    body: arm
+                        .body
+                        .iter()
+                        .map(|s| substitute_stmt(s, type_args))
+                        .collect(),
+                })
+                .collect(),
+        },
+    }
+}
+
+fn substitute_expr(expr: &Expr, type_args: &HashMap<String, Type>) -> Expr {
+    match expr {
+        Expr::Call { name, args } => Expr::Call {
+            name: name.clone(),
+            args: args.iter().map(|a| substitute_expr(a, type_args)).collect(),
+        },
+        Expr::BinOp { op, left, right } => Expr::BinOp {
+            op: *op,
+            left: Box::new(substitute_expr(left, type_args)),
+            right: Box::new(substitute_expr(right, type_args)),
+        },
+        Expr::Switch {
+            scrutinee,
+            arms,
+            default,
+        } => Expr::Switch {
+            scrutinee: Box::new(substitute_expr(scrutinee, type_args)),
+            arms: arms
+                .iter()
+                .map(|arm| SwitchArm {
+                    tag: arm.tag.clone(),
+                    expr: substitute_expr(&arm.expr, type_args),
+                })
+                .collect(),
+            default: default
+                .as_ref()
+                .map(|d| Box::new(substitute_expr(d, type_args))),
+        },
+        Expr::IntCast { expr, target } => Expr::IntCast {
+            expr: Box::new(substitute_expr(expr, type_args)),
+            target: *target,
+        },
+        Expr::BitCast { expr, target } => Expr::BitCast {
+            expr: Box::new(substitute_expr(expr, type_args)),
+            target: substitute_type(target, type_args),
+        },
+        Expr::Mod { left, right } => Expr::Mod {
+            left: Box::new(substitute_expr(left, type_args)),
+            right: Box::new(substitute_expr(right, type_args)),
+        },
+        Expr::Rem { left, right } => Expr::Rem {
+            left: Box::new(substitute_expr(left, type_args)),
+            right: Box::new(substitute_expr(right, type_args)),
+        },
+        Expr::UnaryNeg(inner) => Expr::UnaryNeg(Box::new(substitute_expr(inner, type_args))),
+        Expr::UnaryNot(inner) => Expr::UnaryNot(Box::new(substitute_expr(inner, type_args))),
+        Expr::ArrayLiteral { elems, annotated } => Expr::ArrayLiteral {
+            elems: elems
+                .iter()
+                .map(|e| substitute_expr(e, type_args))
+                .collect(),
+            annotated: annotated
+                .as_ref()
+                .map(|(len, ty)| (*len, substitute_type(ty, type_args))),
+        },
+        Expr::Index { base, index } => Expr::Index {
+            base: Box::new(substitute_expr(base, type_args)),
+            index: Box::new(substitute_expr(index, type_args)),
+        },
+        Expr::SliceRange { base, start, end } => Expr::SliceRange {
+            base: Box::new(substitute_expr(base, type_args)),
+            start: Box::new(substitute_expr(start, type_args)),
+            end: Box::new(substitute_expr(end, type_args)),
+        },
+        Expr::StructLiteral {
+            struct_name,
+            fields,
+        } => Expr::StructLiteral {
+            struct_name: struct_name.clone(),
+            fields: fields
+                .iter()
+                .map(|(name, value)| (name.clone(), substitute_expr(value, type_args)))
+                .collect(),
+        },
+        Expr::FieldAccess { base, field } => Expr::FieldAccess {
+            base: Box::new(substitute_expr(base, type_args)),
+            field: field.clone(),
+        },
+        Expr::UnionLiteral {
+            union_name,
+            variant,
+            value,
+        } => Expr::UnionLiteral {
+            union_name: union_name.clone(),
+            variant: variant.clone(),
+            value: value
+                .as_ref()
+                .map(|v| Box::new(substitute_expr(v, type_args))),
+        },
+        Expr::Try(inner) => Expr::Try(Box::new(substitute_expr(inner, type_args))),
+        Expr::Catch {
+            expr,
+            capture,
+            fallback,
+        } => Expr::Catch {
+            expr: Box::new(substitute_expr(expr, type_args)),
+            capture: capture.clone(),
+            fallback: Box::new(substitute_expr(fallback, type_args)),
+        },
+        Expr::CatchReturn {
+            expr,
+            capture,
+            ret_val,
+        } => Expr::CatchReturn {
+            expr: Box::new(substitute_expr(expr, type_args)),
+            capture: capture.clone(),
+            ret_val: Box::new(substitute_expr(ret_val, type_args)),
+        },
+        Expr::IntFromEnum(inner) => Expr::IntFromEnum(Box::new(substitute_expr(inner, type_args))),
+        Expr::Deref(inner) => Expr::Deref(Box::new(substitute_expr(inner, type_args))),
+        Expr::OptionalUnwrap(inner) => {
+            Expr::OptionalUnwrap(Box::new(substitute_expr(inner, type_args)))
+        }
+        Expr::AddrOf(inner) => Expr::AddrOf(Box::new(substitute_expr(inner, type_args))),
+        Expr::Orelse { left, right } => Expr::Orelse {
+            left: Box::new(substitute_expr(left, type_args)),
+            right: Box::new(substitute_expr(right, type_args)),
+        },
+        Expr::If {
+            cond,
+            then_expr,
+            else_expr,
+        } => Expr::If {
+            cond: Box::new(substitute_expr(cond, type_args)),
+            then_expr: Box::new(substitute_expr(then_expr, type_args)),
+            else_expr: Box::new(substitute_expr(else_expr, type_args)),
+        },
+        _ => expr.clone(),
     }
 }
 
