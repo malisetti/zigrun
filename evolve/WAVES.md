@@ -89,9 +89,9 @@ durable state — stop and resume any time.
 - [x] comptime_array_s1 | oracle/comptime_array_s1.zig | comptime integer parameter in an array type: `[N]u8` parameter + `.len`-derived comptime argument (landed via orch integrator vs real zig)
 - [x] comptime_struct_s1 | oracle/comptime_struct_s1.zig | comptime-generated anonymous struct type with methods, instantiated from `Pair(u8)` (landed via orch integrator vs real zig)
 - [x] comptime_block_s1 | oracle/comptime_block_s1.zig | comptime block evaluation with local mutation, while loop, labeled break, and array length use (landed via orch integrator vs real zig)
+- [x] comptime_type_s2 | oracle/comptime_type_s2.zig | comptime function returning `type`, then use the returned type in a declaration (landed via orch integrator vs real zig)
 
 ## Frontier (pending — each is real Zig that zigrun must learn to match)
-- [ ] comptime_type_s2 | oracle/pending/comptime_type_s2.zig | comptime function returning `type`, then use the returned type in a declaration
 - [ ] bitwise | oracle/pending/bitwise.zig | self-discovered atomic gap (real zig=35)
 - [ ] for | oracle/pending/for.zig | self-discovered atomic gap (real zig=39)
 - [ ] struct | oracle/pending/struct.zig | self-discovered atomic gap (real zig=42)
