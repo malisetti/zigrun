@@ -2016,7 +2016,9 @@ impl Parser {
 
         let mut type_args = HashMap::new();
         let len_params = collect_array_len_params(&template);
+        let type_factory = template.return_type == Type::Type;
         let mut int_args = HashMap::new();
+        let mut comptime_values = HashMap::new();
         let mut runtime_args = Vec::new();
         let mut mangled_parts = Vec::new();
         for ((param_name, param_ty), arg) in template.params.iter().zip(args.into_iter()) {
@@ -2026,13 +2028,18 @@ impl Parser {
                 })?;
                 mangled_parts.push(type_mangle(&ty));
                 type_args.insert(param_name.clone(), ty);
-            } else if len_params.contains(param_name) {
+            } else if len_params.contains(param_name)
+                || (type_factory && matches!(param_ty, Type::Bool | Type::Int(_)))
+            {
                 let value = self.eval_comptime_arg(&arg).ok_or_else(|| {
                     format!("comptime integer parameter {param_name:?} requires a comptime-known argument")
                 })?;
                 mangled_parts.push(format!("{param_name}{value}"));
                 int_args.insert(param_name.clone(), value as usize);
-                runtime_args.push(Expr::Int(value));
+                comptime_values.insert(param_name.clone(), value);
+                if !type_factory {
+                    runtime_args.push(Expr::Int(value));
+                }
             } else {
                 runtime_args.push(arg);
             }
@@ -2045,7 +2052,7 @@ impl Parser {
         }
 
         let spec_name = format!("{}__{}", name, mangled_parts.join("__"));
-        if template.return_type == Type::Type {
+        if type_factory {
             if !runtime_args.is_empty() {
                 return Err(format!(
                     "type factory {name:?} cannot have runtime arguments in this subset"
@@ -2055,14 +2062,14 @@ impl Parser {
                 .body
                 .iter()
                 .find_map(|stmt| match stmt {
-                    Stmt::Return(Expr::TypeValue(ty)) => Some(ty.clone()),
+                    Stmt::Return(expr) => {
+                        eval_comptime_type_expr(expr, &type_args, &int_args, &comptime_values)
+                    }
                     _ => None,
                 })
                 .ok_or_else(|| format!("type factory {name:?} must return a type value"))?;
             let Type::Struct(template_struct_name) = returned_ty else {
-                return Err(format!(
-                    "type factory {name:?} currently supports anonymous structs only"
-                ));
+                return Ok(Expr::TypeValue(returned_ty));
             };
             let concrete_name = format!("{spec_name}_type");
             if !self.structs.contains_key(&concrete_name) {
@@ -2835,6 +2842,9 @@ impl Parser {
 }
 
 fn is_generic_function(f: &Function) -> bool {
+    if f.return_type == Type::Type {
+        return true;
+    }
     f.params
         .iter()
         .any(|(_, ty)| *ty == Type::Type || type_has_param_len(ty))
@@ -2845,6 +2855,33 @@ fn expr_as_type(expr: &Expr) -> Option<Type> {
     match expr {
         Expr::Var(name) => Type::from_name(name),
         Expr::TypeValue(ty) => Some(ty.clone()),
+        _ => None,
+    }
+}
+
+fn eval_comptime_type_expr(
+    expr: &Expr,
+    type_args: &HashMap<String, Type>,
+    int_args: &HashMap<String, usize>,
+    comptime_values: &HashMap<String, i64>,
+) -> Option<Type> {
+    match expr {
+        Expr::TypeValue(ty) => Some(substitute_type(ty, type_args, int_args)),
+        Expr::Var(name) => type_args
+            .get(name)
+            .cloned()
+            .or_else(|| Type::from_name(name)),
+        Expr::If {
+            cond,
+            then_expr,
+            else_expr,
+        } => {
+            if eval_comptime_expr(cond, comptime_values, &HashMap::new())? != 0 {
+                eval_comptime_type_expr(then_expr, type_args, int_args, comptime_values)
+            } else {
+                eval_comptime_type_expr(else_expr, type_args, int_args, comptime_values)
+            }
+        }
         _ => None,
     }
 }
