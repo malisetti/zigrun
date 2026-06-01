@@ -344,6 +344,7 @@ pub enum Stmt {
     },
     Break {
         label: Option<String>,
+        value: Option<Expr>,
     },
     Continue,
     ForRange {

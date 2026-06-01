@@ -784,8 +784,13 @@ impl Parser {
                 } else {
                     None
                 };
+                let value = if !self.check(&TokenKind::Semicolon) {
+                    Some(self.parse_expr()?)
+                } else {
+                    None
+                };
                 self.expect(TokenKind::Semicolon)?;
-                Ok(Stmt::Break { label })
+                Ok(Stmt::Break { label, value })
             }
             TokenKind::Continue => {
                 self.advance();
@@ -1501,6 +1506,15 @@ impl Parser {
         }
         if self.check(&TokenKind::Comptime) {
             self.advance();
+            if matches!(self.peek_kind(), TokenKind::Ident(_))
+                && self.check_next(&TokenKind::Colon)
+                && self
+                    .tokens
+                    .get(self.pos + 2)
+                    .is_some_and(|t| t.kind == TokenKind::LBrace)
+            {
+                return self.parse_comptime_block_expr();
+            }
             return self.parse_unary();
         }
         if self.check(&TokenKind::Minus) {
@@ -1514,6 +1528,21 @@ impl Parser {
             return Ok(Expr::AddrOf(Box::new(operand)));
         }
         self.parse_postfix()
+    }
+
+    fn parse_comptime_block_expr(&mut self) -> Result<Expr, String> {
+        let label = self.expect_ident()?;
+        self.expect(TokenKind::Colon)?;
+        let saved_locals = self.locals.clone();
+        let saved_comptime_ints = self.comptime_ints.clone();
+        let body = self.parse_block()?;
+        let mut locals = self.comptime_ints.clone();
+        let value =
+            eval_comptime_labeled_block(&label, &body, &mut locals, &self.comptime_functions)
+                .ok_or_else(|| format!("unable to evaluate comptime block `{label}`"))?;
+        self.locals = saved_locals;
+        self.comptime_ints = saved_comptime_ints;
+        Ok(Expr::Int(value))
     }
 
     fn parse_postfix(&mut self) -> Result<Expr, String> {
@@ -3136,8 +3165,11 @@ fn substitute_stmt(
                 .map(|s| substitute_stmt(s, type_args, int_args))
                 .collect(),
         },
-        Stmt::Break { label } => Stmt::Break {
+        Stmt::Break { label, value } => Stmt::Break {
             label: label.clone(),
+            value: value
+                .as_ref()
+                .map(|e| substitute_expr(e, type_args, int_args)),
         },
         Stmt::Continue => Stmt::Continue,
         Stmt::ForRange {
@@ -3664,18 +3696,69 @@ fn eval_comptime_block(
     functions: &HashMap<String, Function>,
     fuel: usize,
 ) -> Option<i64> {
+    match eval_comptime_stmts(stmts, locals, functions, fuel)? {
+        ComptimeFlow::Value(value) => Some(value),
+        ComptimeFlow::Break {
+            value: Some(value), ..
+        } => Some(value),
+        ComptimeFlow::Break { value: None, .. } | ComptimeFlow::Continue => None,
+    }
+}
+
+fn eval_comptime_labeled_block(
+    label: &str,
+    stmts: &[Stmt],
+    locals: &mut HashMap<String, i64>,
+    functions: &HashMap<String, Function>,
+) -> Option<i64> {
+    match eval_comptime_stmts(stmts, locals, functions, 4096)? {
+        ComptimeFlow::Value(value) => Some(value),
+        ComptimeFlow::Break {
+            label: Some(break_label),
+            value: Some(value),
+        } if break_label == label => Some(value),
+        _ => None,
+    }
+}
+
+enum ComptimeFlow {
+    Value(i64),
+    Break {
+        label: Option<String>,
+        value: Option<i64>,
+    },
+    Continue,
+}
+
+fn eval_comptime_stmts(
+    stmts: &[Stmt],
+    locals: &mut HashMap<String, i64>,
+    functions: &HashMap<String, Function>,
+    fuel: usize,
+) -> Option<ComptimeFlow> {
     if fuel == 0 {
         return None;
     }
     for stmt in stmts {
         match stmt {
             Stmt::Return(expr) => {
-                return eval_comptime_expr_with_fuel(expr, locals, functions, fuel - 1);
+                return Some(ComptimeFlow::Value(eval_comptime_expr_with_fuel(
+                    expr,
+                    locals,
+                    functions,
+                    fuel - 1,
+                )?));
             }
             Stmt::Let { name, value, .. } => {
                 if let Some(value) =
                     eval_comptime_expr_with_fuel(value, locals, functions, fuel - 1)
                 {
+                    locals.insert(name.clone(), value);
+                }
+            }
+            Stmt::Assign { target, value } => {
+                if let AssignTarget::Name(name) = target {
+                    let value = eval_comptime_expr_with_fuel(value, locals, functions, fuel - 1)?;
                     locals.insert(name.clone(), value);
                 }
             }
@@ -3686,25 +3769,78 @@ fn eval_comptime_block(
                 ..
             } => {
                 if eval_comptime_expr_with_fuel(cond, locals, functions, fuel - 1)? != 0 {
-                    let mut branch_locals = locals.clone();
-                    if let Some(value) =
-                        eval_comptime_block(then_branch, &mut branch_locals, functions, fuel - 1)
+                    if let Some(flow) =
+                        eval_comptime_stmts(then_branch, locals, functions, fuel - 1)
                     {
-                        return Some(value);
+                        return Some(flow);
                     }
                 } else if let Some(else_branch) = else_branch {
-                    let mut branch_locals = locals.clone();
-                    if let Some(value) =
-                        eval_comptime_block(else_branch, &mut branch_locals, functions, fuel - 1)
+                    if let Some(flow) =
+                        eval_comptime_stmts(else_branch, locals, functions, fuel - 1)
                     {
-                        return Some(value);
+                        return Some(flow);
                     }
                 }
             }
+            Stmt::While {
+                cond, cont, body, ..
+            } => {
+                let mut remaining = fuel - 1;
+                while remaining > 0
+                    && eval_comptime_expr_with_fuel(cond, locals, functions, remaining)? != 0
+                {
+                    if let Some(flow) = eval_comptime_stmts(body, locals, functions, remaining) {
+                        match flow {
+                            ComptimeFlow::Continue => {}
+                            ComptimeFlow::Break { label: None, .. } => break,
+                            other => return Some(other),
+                        }
+                    }
+                    if let Some(cont) = cont {
+                        eval_comptime_cont_expr(cont, locals, functions, remaining)?;
+                    }
+                    remaining -= 1;
+                }
+                if remaining == 0 {
+                    return None;
+                }
+            }
+            Stmt::Break { label, value } => {
+                let value = match value {
+                    Some(value) => Some(eval_comptime_expr_with_fuel(
+                        value,
+                        locals,
+                        functions,
+                        fuel - 1,
+                    )?),
+                    None => None,
+                };
+                return Some(ComptimeFlow::Break {
+                    label: label.clone(),
+                    value,
+                });
+            }
+            Stmt::Continue => return Some(ComptimeFlow::Continue),
             _ => {}
         }
     }
     None
+}
+
+fn eval_comptime_cont_expr(
+    expr: &Expr,
+    locals: &mut HashMap<String, i64>,
+    functions: &HashMap<String, Function>,
+    fuel: usize,
+) -> Option<i64> {
+    if let Expr::BinOp { left, .. } = expr {
+        if let Expr::Var(name) = left.as_ref() {
+            let value = eval_comptime_expr_with_fuel(expr, locals, functions, fuel)?;
+            locals.insert(name.clone(), value);
+            return Some(value);
+        }
+    }
+    eval_comptime_expr_with_fuel(expr, locals, functions, fuel)
 }
 
 #[cfg(test)]
