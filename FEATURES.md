@@ -37,7 +37,7 @@ zigrun compiles a **subset** of Zig to C. This scorecard tracks coverage
 - ❌ mutability enforcement (`const` reassignment not rejected) · ❌ shadowing rules
 - ⚠️ `u8` arithmetic WRAPS (C `uint8_t`) vs Zig's checked semantics — a divergence
 - ❌ comptime evaluation · ⚠️ `@intCast` only · ❌ other `@builtins` (`@import`/`@as`/…)
-- ❌ std library · ❌ I/O / `print` · ❌ error handling · ❌ allocators/memory · ❌ async
+- ⚠️ `std.debug.print` literal formats with `{}` scalar args · ❌ broader std library · ❌ allocators/memory · ❌ async
 
 ## Honest coverage
 

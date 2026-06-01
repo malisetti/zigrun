@@ -11,9 +11,10 @@ the order of ~10–15% of the language surface — this is an evolving project).
 ## The contract: `zigrun run FILE.zig`
 
 Compiles the program to C, builds it with `cc`, and runs the native binary; the
-return value of `pub fn main() u8` becomes the process **exit code**. No `std`,
-no I/O — the exit code IS the observable result, which makes the oracle
-un-fakeable: a program must actually compile and run to the right answer.
+return value of `pub fn main() u8` becomes the process **exit code**. For most
+programs the exit code is the observable result; I/O fixtures also compare
+stdout/stderr against real Zig, which keeps the oracle un-fakeable: a program
+must actually compile and run to the right answer.
 
 ```
 zigrun emit-c oracle/add.zig          # print the generated C
@@ -34,6 +35,7 @@ exit codes. **Green means the programs run correctly**, not "unit tests pass."
 | while | `while`, mutation, `<` | 15 |
 | fn | function decl + call, `*` | 25 |
 | fib | recursion, `-`, `+`, `<` | 55 |
+| print_args | `std.debug.print` with `{}` scalar args; stderr is oracle-checked | 42 |
 
 This is the **subset** (the language we are committing to support). It grows one
 wave at a time — widen it by adding programs to `oracle/`, never by relaxing the

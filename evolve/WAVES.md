@@ -47,6 +47,7 @@ durable state — stop and resume any time.
 ## North star (hello world — frontier-run prioritizes these first)
 - [x] helloworld | oracle/helloworld.zig | NORTH STAR: `@import("std")` + `std.debug.print("Hello, world!\n", .{{}})` — DIFFERENTIAL GREEN vs real zig (landed on main)
 - [x] print | oracle/print.zig | ladder: single `std.debug.print` line (same I/O path as helloworld) (landed via orch integrator vs real zig)
+- [x] print_args | oracle/print_args.zig | `std.debug.print` with `{}` scalar arguments, including signed ints and bools; stderr is differential-checked vs real zig
 - [x] packedstruct_s1 | oracle/packedstruct_s1.zig | ladder step for 'packedstruct' (real zig=5) (landed via orch integrator vs real zig)
 - [x] multidim_s1 | oracle/multidim_s1.zig | ladder step for 'multidim' (real zig=10) (landed via orch integrator vs real zig)
 - [x] multidim_s2 | oracle/multidim_s2.zig | ladder step for 'multidim' (real zig=50) (landed via orch integrator vs real zig)

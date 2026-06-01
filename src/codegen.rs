@@ -453,12 +453,16 @@ fn collect_optionals_in_expr(expr: &Expr, add: &mut dyn FnMut(&Type)) {
         | Expr::AddrOf(inner) => {
             collect_optionals_in_expr(inner, add);
         }
+        Expr::DebugPrint { args, .. } => {
+            for arg in args {
+                collect_optionals_in_expr(arg, add);
+            }
+        }
         Expr::Int(_)
         | Expr::Bool(_)
         | Expr::Null
         | Expr::TypeValue(_)
         | Expr::StringLit(_)
-        | Expr::DebugPrint { .. }
         | Expr::Undefined
         | Expr::Var(_)
         | Expr::EnumLiteral { .. }
@@ -627,12 +631,16 @@ fn collect_error_unions_in_expr(expr: &Expr, add: &mut dyn FnMut(&Type)) {
         | Expr::AddrOf(inner) => {
             collect_error_unions_in_expr(inner, add);
         }
+        Expr::DebugPrint { args, .. } => {
+            for arg in args {
+                collect_error_unions_in_expr(arg, add);
+            }
+        }
         Expr::Int(_)
         | Expr::Bool(_)
         | Expr::Null
         | Expr::TypeValue(_)
         | Expr::StringLit(_)
-        | Expr::DebugPrint { .. }
         | Expr::Undefined
         | Expr::Var(_)
         | Expr::EnumLiteral { .. }
@@ -906,12 +914,16 @@ fn collect_slices_in_expr(expr: &Expr, add: &mut dyn FnMut(&Type)) {
             collect_slices_in_expr(left, add);
             collect_slices_in_expr(right, add);
         }
+        Expr::DebugPrint { args, .. } => {
+            for arg in args {
+                collect_slices_in_expr(arg, add);
+            }
+        }
         Expr::Int(_)
         | Expr::Bool(_)
         | Expr::Null
         | Expr::TypeValue(_)
         | Expr::StringLit(_)
-        | Expr::DebugPrint { .. }
         | Expr::Undefined
         | Expr::Var(_)
         | Expr::EnumLiteral { .. }
@@ -1076,6 +1088,135 @@ fn c_string_literal(s: &str) -> String {
     out
 }
 
+fn emit_debug_print_call(
+    format: &str,
+    args: &[Expr],
+    env: &HashMap<String, Type>,
+    func_returns: &HashMap<String, Type>,
+    fn_return_type: &Type,
+    temp_id: &mut usize,
+) -> Result<String, String> {
+    let mut c_format = String::new();
+    let mut c_args = Vec::new();
+    let mut arg_idx = 0usize;
+    let chars: Vec<char> = format.chars().collect();
+    let mut i = 0usize;
+    while i < chars.len() {
+        match chars[i] {
+            '{' if chars.get(i + 1) == Some(&'{') => {
+                c_format.push('{');
+                i += 2;
+            }
+            '}' if chars.get(i + 1) == Some(&'}') => {
+                c_format.push('}');
+                i += 2;
+            }
+            '{' => {
+                let start = i + 1;
+                let end = chars[start..]
+                    .iter()
+                    .position(|c| *c == '}')
+                    .map(|off| start + off)
+                    .ok_or_else(|| "unterminated std.debug.print format field".to_string())?;
+                let spec: String = chars[start..end].iter().collect();
+                let arg = args.get(arg_idx).ok_or_else(|| {
+                    "std.debug.print has fewer arguments than format fields".to_string()
+                })?;
+                arg_idx += 1;
+                let arg_ty = expr_type(arg, env, func_returns);
+                match (spec.as_str(), &arg_ty) {
+                    ("", Type::Bool) => {
+                        c_format.push_str("%s");
+                        let rendered = emit_expr(
+                            arg,
+                            env,
+                            Some(&Type::Bool),
+                            func_returns,
+                            fn_return_type,
+                            temp_id,
+                        )?;
+                        c_args.push(format!("({rendered}) ? \"true\" : \"false\""));
+                    }
+                    ("", Type::Int(it)) => {
+                        if it.is_signed() {
+                            c_format.push_str("%lld");
+                            let rendered = emit_expr(
+                                arg,
+                                env,
+                                Some(&arg_ty),
+                                func_returns,
+                                fn_return_type,
+                                temp_id,
+                            )?;
+                            c_args.push(format!("(long long)({rendered})"));
+                        } else {
+                            c_format.push_str("%llu");
+                            let rendered = emit_expr(
+                                arg,
+                                env,
+                                Some(&arg_ty),
+                                func_returns,
+                                fn_return_type,
+                                temp_id,
+                            )?;
+                            c_args.push(format!("(unsigned long long)({rendered})"));
+                        }
+                    }
+                    ("", Type::Enum(_)) => {
+                        c_format.push_str("%lld");
+                        let rendered =
+                            emit_expr(arg, env, None, func_returns, fn_return_type, temp_id)?;
+                        c_args.push(format!("(long long)({rendered})"));
+                    }
+                    ("s", Type::Slice { .. }) => {
+                        let rendered = emit_expr(
+                            arg,
+                            env,
+                            Some(&arg_ty),
+                            func_returns,
+                            fn_return_type,
+                            temp_id,
+                        )?;
+                        c_format.push_str("%.*s");
+                        c_args.push(format!("(int)({rendered}).len"));
+                        c_args.push(format!("(const char *)({rendered}).ptr"));
+                    }
+                    ("s", _) => {
+                        let rendered =
+                            emit_expr(arg, env, None, func_returns, fn_return_type, temp_id)?;
+                        c_format.push_str("%s");
+                        c_args.push(rendered);
+                    }
+                    _ => {
+                        return Err(format!(
+                            "unsupported std.debug.print format field {{{spec}}} for {arg_ty:?}"
+                        ));
+                    }
+                }
+                i = end + 1;
+            }
+            '%' => {
+                c_format.push_str("%%");
+                i += 1;
+            }
+            ch => {
+                c_format.push(ch);
+                i += 1;
+            }
+        }
+    }
+    if arg_idx != args.len() {
+        return Err("std.debug.print has more arguments than format fields".to_string());
+    }
+    let mut call = format!("fprintf(stderr, {}", c_string_literal(&c_format));
+    for arg in c_args {
+        call.push_str(", ");
+        call.push_str(&arg);
+    }
+    call.push(')');
+    Ok(call)
+}
+
 fn prototype(f: &Function) -> String {
     let params = if f.params.is_empty() {
         "void".to_string()
@@ -1189,7 +1330,14 @@ fn expr_type(
             .error_union_payload()
             .unwrap_or(Type::Int(IntType::U8)),
         Expr::BinOp { op, left, right } => match op {
-            BinOp::LogicalAnd | BinOp::LogicalOr => Type::Bool,
+            BinOp::Lt
+            | BinOp::Gt
+            | BinOp::Le
+            | BinOp::Ge
+            | BinOp::Eq
+            | BinOp::Ne
+            | BinOp::LogicalAnd
+            | BinOp::LogicalOr => Type::Bool,
             _ => combine_types(
                 expr_type(left, env, func_returns),
                 expr_type(right, env, func_returns),
@@ -1432,8 +1580,10 @@ fn emit_stmt(
                 emit_expr(value, env, Some(&ty), func_returns, return_type, temp_id)?
             );
         }
-        Stmt::Expr(Expr::DebugPrint { format }) => {
-            let _ = writeln!(out, "fprintf(stderr, {});", c_string_literal(format));
+        Stmt::Expr(Expr::DebugPrint { format, args }) => {
+            let call =
+                emit_debug_print_call(format, args, env, func_returns, return_type, temp_id)?;
+            let _ = writeln!(out, "{call};");
         }
         Stmt::Expr(e) => {
             let _ = writeln!(
@@ -2203,11 +2353,10 @@ fn emit_expr(
                 c_string_literal(s)
             }
         }
-        Expr::DebugPrint { format } => {
-            format!(
-                "(fprintf(stderr, {}, (void)0), 0)",
-                c_string_literal(format)
-            )
+        Expr::DebugPrint { format, args } => {
+            let call =
+                emit_debug_print_call(format, args, env, func_returns, fn_return_type, temp_id)?;
+            format!("({call}, 0)")
         }
         Expr::Undefined => return Err("undefined has no runtime value".to_string()),
         Expr::Var(name) => {

@@ -1759,10 +1759,24 @@ impl Parser {
         self.expect(TokenKind::Comma)?;
         self.expect(TokenKind::Dot)?;
         self.expect(TokenKind::LBrace)?;
+        let mut args = Vec::new();
+        if !self.check(&TokenKind::RBrace) {
+            loop {
+                args.push(self.parse_expr()?);
+                if self.check(&TokenKind::Comma) {
+                    self.advance();
+                    if self.check(&TokenKind::RBrace) {
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            }
+        }
         self.expect(TokenKind::RBrace)?;
         self.expect(TokenKind::RParen)?;
         self.expect(TokenKind::Semicolon)?;
-        Ok(Some(Stmt::Expr(Expr::DebugPrint { format })))
+        Ok(Some(Stmt::Expr(Expr::DebugPrint { format, args })))
     }
 
     fn parse_primary(&mut self) -> Result<Expr, String> {
@@ -3402,6 +3416,13 @@ fn substitute_expr(
             then_expr: Box::new(substitute_expr(then_expr, type_args, int_args)),
             else_expr: Box::new(substitute_expr(else_expr, type_args, int_args)),
         },
+        Expr::DebugPrint { format, args } => Expr::DebugPrint {
+            format: format.clone(),
+            args: args
+                .iter()
+                .map(|arg| substitute_expr(arg, type_args, int_args))
+                .collect(),
+        },
         Expr::TypeValue(ty) => Expr::TypeValue(substitute_type(ty, type_args, int_args)),
         _ => expr.clone(),
     }
@@ -3427,7 +3448,14 @@ fn infer_expr_type(
             .cloned()
             .unwrap_or(Type::Int(IntType::U8)),
         Expr::BinOp { op, left, right } => match op {
-            BinOp::LogicalAnd | BinOp::LogicalOr => Type::Bool,
+            BinOp::Lt
+            | BinOp::Gt
+            | BinOp::Le
+            | BinOp::Ge
+            | BinOp::Eq
+            | BinOp::Ne
+            | BinOp::LogicalAnd
+            | BinOp::LogicalOr => Type::Bool,
             _ => {
                 let lt = infer_expr_type(left, enums, structs, unions, locals, functions);
                 let rt = infer_expr_type(right, enums, structs, unions, locals, functions);
