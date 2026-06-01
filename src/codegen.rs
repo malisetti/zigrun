@@ -1730,7 +1730,7 @@ fn emit_stmt(
             indent(out, depth);
             out.push_str("}\n");
         }
-        Stmt::Break { label } => {
+        Stmt::Break { label, .. } => {
             if let Some(zig_label) = label {
                 let c_label = loop_break_labels
                     .iter()
