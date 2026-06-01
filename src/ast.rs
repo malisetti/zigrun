@@ -421,9 +421,10 @@ pub enum Expr {
     Null,
     /// A comptime-only type value, e.g. a function returning `struct { ... }`.
     TypeValue(Type),
-    /// `std.debug.print(fmt, .{{}})` lowered to fprintf(stderr, …).
+    /// `std.debug.print(fmt, .{...})` lowered to fprintf(stderr, ...).
     DebugPrint {
         format: String,
+        args: Vec<Expr>,
     },
     Undefined,
     Var(String),

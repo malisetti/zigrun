@@ -453,12 +453,16 @@ fn collect_optionals_in_expr(expr: &Expr, add: &mut dyn FnMut(&Type)) {
         | Expr::AddrOf(inner) => {
             collect_optionals_in_expr(inner, add);
         }
+        Expr::DebugPrint { args, .. } => {
+            for arg in args {
+                collect_optionals_in_expr(arg, add);
+            }
+        }
         Expr::Int(_)
         | Expr::Bool(_)
         | Expr::Null
         | Expr::TypeValue(_)
         | Expr::StringLit(_)
-        | Expr::DebugPrint { .. }
         | Expr::Undefined
         | Expr::Var(_)
         | Expr::EnumLiteral { .. }
@@ -627,12 +631,16 @@ fn collect_error_unions_in_expr(expr: &Expr, add: &mut dyn FnMut(&Type)) {
         | Expr::AddrOf(inner) => {
             collect_error_unions_in_expr(inner, add);
         }
+        Expr::DebugPrint { args, .. } => {
+            for arg in args {
+                collect_error_unions_in_expr(arg, add);
+            }
+        }
         Expr::Int(_)
         | Expr::Bool(_)
         | Expr::Null
         | Expr::TypeValue(_)
         | Expr::StringLit(_)
-        | Expr::DebugPrint { .. }
         | Expr::Undefined
         | Expr::Var(_)
         | Expr::EnumLiteral { .. }
@@ -761,25 +769,56 @@ fn collect_slice_types(program: &Program) -> Vec<Type> {
             }
         }
     };
+    for s in &program.structs {
+        for (_, ty) in &s.fields {
+            collect_slices_in_type(ty, &mut add);
+        }
+    }
+    for u in &program.unions {
+        for v in &u.variants {
+            if let Some(payload) = &v.payload {
+                collect_slices_in_type(payload, &mut add);
+            }
+        }
+    }
     for f in &program.functions {
-        add(&f.return_type);
+        collect_slices_in_type(&f.return_type, &mut add);
         for (_, ty) in &f.params {
-            add(ty);
+            collect_slices_in_type(ty, &mut add);
         }
         collect_slices_in_stmts(&f.body, &mut add);
     }
     for g in &program.globals {
-        add(&g.ty);
+        collect_slices_in_type(&g.ty, &mut add);
         collect_slices_in_expr(&g.value, &mut add);
     }
     out
+}
+
+fn collect_slices_in_type(ty: &Type, add: &mut dyn FnMut(&Type)) {
+    add(ty);
+    match ty {
+        Type::Array { elem, .. } | Type::Slice { elem, .. } => {
+            collect_slices_in_type(elem, add);
+        }
+        Type::ErrorUnion { payload, .. } => collect_slices_in_type(payload, add),
+        Type::Optional(inner) | Type::Pointer(inner) => collect_slices_in_type(inner, add),
+        Type::Bool
+        | Type::Int(_)
+        | Type::Enum(_)
+        | Type::Struct(_)
+        | Type::Union(_)
+        | Type::Type
+        | Type::Generic(_)
+        | Type::Void => {}
+    }
 }
 
 fn collect_slices_in_stmts(stmts: &[Stmt], add: &mut dyn FnMut(&Type)) {
     for s in stmts {
         match s {
             Stmt::Let { ty, value, .. } => {
-                add(ty);
+                collect_slices_in_type(ty, add);
                 collect_slices_in_expr(value, add);
             }
             Stmt::Assign { value, .. } => collect_slices_in_expr(value, add),
@@ -906,12 +945,16 @@ fn collect_slices_in_expr(expr: &Expr, add: &mut dyn FnMut(&Type)) {
             collect_slices_in_expr(left, add);
             collect_slices_in_expr(right, add);
         }
+        Expr::DebugPrint { args, .. } => {
+            for arg in args {
+                collect_slices_in_expr(arg, add);
+            }
+        }
         Expr::Int(_)
         | Expr::Bool(_)
         | Expr::Null
         | Expr::TypeValue(_)
         | Expr::StringLit(_)
-        | Expr::DebugPrint { .. }
         | Expr::Undefined
         | Expr::Var(_)
         | Expr::EnumLiteral { .. }
@@ -1076,6 +1119,135 @@ fn c_string_literal(s: &str) -> String {
     out
 }
 
+fn emit_debug_print_call(
+    format: &str,
+    args: &[Expr],
+    env: &HashMap<String, Type>,
+    func_returns: &HashMap<String, Type>,
+    fn_return_type: &Type,
+    temp_id: &mut usize,
+) -> Result<String, String> {
+    let mut c_format = String::new();
+    let mut c_args = Vec::new();
+    let mut arg_idx = 0usize;
+    let chars: Vec<char> = format.chars().collect();
+    let mut i = 0usize;
+    while i < chars.len() {
+        match chars[i] {
+            '{' if chars.get(i + 1) == Some(&'{') => {
+                c_format.push('{');
+                i += 2;
+            }
+            '}' if chars.get(i + 1) == Some(&'}') => {
+                c_format.push('}');
+                i += 2;
+            }
+            '{' => {
+                let start = i + 1;
+                let end = chars[start..]
+                    .iter()
+                    .position(|c| *c == '}')
+                    .map(|off| start + off)
+                    .ok_or_else(|| "unterminated std.debug.print format field".to_string())?;
+                let spec: String = chars[start..end].iter().collect();
+                let arg = args.get(arg_idx).ok_or_else(|| {
+                    "std.debug.print has fewer arguments than format fields".to_string()
+                })?;
+                arg_idx += 1;
+                let arg_ty = expr_type(arg, env, func_returns);
+                match (spec.as_str(), &arg_ty) {
+                    ("", Type::Bool) => {
+                        c_format.push_str("%s");
+                        let rendered = emit_expr(
+                            arg,
+                            env,
+                            Some(&Type::Bool),
+                            func_returns,
+                            fn_return_type,
+                            temp_id,
+                        )?;
+                        c_args.push(format!("({rendered}) ? \"true\" : \"false\""));
+                    }
+                    ("", Type::Int(it)) => {
+                        if it.is_signed() {
+                            c_format.push_str("%lld");
+                            let rendered = emit_expr(
+                                arg,
+                                env,
+                                Some(&arg_ty),
+                                func_returns,
+                                fn_return_type,
+                                temp_id,
+                            )?;
+                            c_args.push(format!("(long long)({rendered})"));
+                        } else {
+                            c_format.push_str("%llu");
+                            let rendered = emit_expr(
+                                arg,
+                                env,
+                                Some(&arg_ty),
+                                func_returns,
+                                fn_return_type,
+                                temp_id,
+                            )?;
+                            c_args.push(format!("(unsigned long long)({rendered})"));
+                        }
+                    }
+                    ("", Type::Enum(_)) => {
+                        c_format.push_str("%lld");
+                        let rendered =
+                            emit_expr(arg, env, None, func_returns, fn_return_type, temp_id)?;
+                        c_args.push(format!("(long long)({rendered})"));
+                    }
+                    ("s", Type::Slice { .. }) => {
+                        let rendered = emit_expr(
+                            arg,
+                            env,
+                            Some(&arg_ty),
+                            func_returns,
+                            fn_return_type,
+                            temp_id,
+                        )?;
+                        c_format.push_str("%.*s");
+                        c_args.push(format!("(int)({rendered}).len"));
+                        c_args.push(format!("(const char *)({rendered}).ptr"));
+                    }
+                    ("s", _) => {
+                        let rendered =
+                            emit_expr(arg, env, None, func_returns, fn_return_type, temp_id)?;
+                        c_format.push_str("%s");
+                        c_args.push(rendered);
+                    }
+                    _ => {
+                        return Err(format!(
+                            "unsupported std.debug.print format field {{{spec}}} for {arg_ty:?}"
+                        ));
+                    }
+                }
+                i = end + 1;
+            }
+            '%' => {
+                c_format.push_str("%%");
+                i += 1;
+            }
+            ch => {
+                c_format.push(ch);
+                i += 1;
+            }
+        }
+    }
+    if arg_idx != args.len() {
+        return Err("std.debug.print has more arguments than format fields".to_string());
+    }
+    let mut call = format!("fprintf(stderr, {}", c_string_literal(&c_format));
+    for arg in c_args {
+        call.push_str(", ");
+        call.push_str(&arg);
+    }
+    call.push(')');
+    Ok(call)
+}
+
 fn prototype(f: &Function) -> String {
     let params = if f.params.is_empty() {
         "void".to_string()
@@ -1189,7 +1361,14 @@ fn expr_type(
             .error_union_payload()
             .unwrap_or(Type::Int(IntType::U8)),
         Expr::BinOp { op, left, right } => match op {
-            BinOp::LogicalAnd | BinOp::LogicalOr => Type::Bool,
+            BinOp::Lt
+            | BinOp::Gt
+            | BinOp::Le
+            | BinOp::Ge
+            | BinOp::Eq
+            | BinOp::Ne
+            | BinOp::LogicalAnd
+            | BinOp::LogicalOr => Type::Bool,
             _ => combine_types(
                 expr_type(left, env, func_returns),
                 expr_type(right, env, func_returns),
@@ -1432,8 +1611,10 @@ fn emit_stmt(
                 emit_expr(value, env, Some(&ty), func_returns, return_type, temp_id)?
             );
         }
-        Stmt::Expr(Expr::DebugPrint { format }) => {
-            let _ = writeln!(out, "fprintf(stderr, {});", c_string_literal(format));
+        Stmt::Expr(Expr::DebugPrint { format, args }) => {
+            let call =
+                emit_debug_print_call(format, args, env, func_returns, return_type, temp_id)?;
+            let _ = writeln!(out, "{call};");
         }
         Stmt::Expr(e) => {
             let _ = writeln!(
@@ -2203,11 +2384,10 @@ fn emit_expr(
                 c_string_literal(s)
             }
         }
-        Expr::DebugPrint { format } => {
-            format!(
-                "(fprintf(stderr, {}, (void)0), 0)",
-                c_string_literal(format)
-            )
+        Expr::DebugPrint { format, args } => {
+            let call =
+                emit_debug_print_call(format, args, env, func_returns, fn_return_type, temp_id)?;
+            format!("({call}, 0)")
         }
         Expr::Undefined => return Err("undefined has no runtime value".to_string()),
         Expr::Var(name) => {
@@ -2707,10 +2887,18 @@ fn emit_expr(
             let tag = c_union_tag(&udef, variant);
             let mut init = format!("({un}){{ .tag = {tag}");
             if let Some(val) = value {
+                let payload_ty = union_variant_payload_type(&udef, variant)?;
                 let _ = write!(
                     &mut init,
                     ", .payload.{variant} = {}",
-                    emit_expr(val, env, None, func_returns, fn_return_type, temp_id)?
+                    emit_expr(
+                        val,
+                        env,
+                        Some(&payload_ty),
+                        func_returns,
+                        fn_return_type,
+                        temp_id
+                    )?
                 );
             }
             init.push_str(" }");
@@ -3024,24 +3212,34 @@ fn emit_union_switch(
         };
         let udef = lookup_union(union_name).ok_or_else(|| format!("unknown union {union_name}"))?;
         let tag = c_union_tag(&udef, variant);
-        let arm_expr = emit_expr(
-            &arm.expr,
-            env,
-            Some(&result_ty),
-            func_returns,
-            fn_return_type,
-            temp_id,
-        )?;
+        let mut arm_env = env.clone();
         if let Some(cap) = capture {
             let payload_ty = union_variant_payload_type(&udef, variant)?;
             let cap_ct = c_type(&payload_ty);
             let payload = union_payload_access(s, variant);
             let bind = format!("{cap_ct} {cap} = {payload}");
+            arm_env.insert(cap.clone(), payload_ty);
+            let arm_expr = emit_expr(
+                &arm.expr,
+                &arm_env,
+                Some(&result_ty),
+                func_returns,
+                fn_return_type,
+                temp_id,
+            )?;
             let _ = writeln!(
                 out,
                 "    if (({s}).tag == {tag}) {{ {bind}; _zig_switch_result = {arm_expr}; }}"
             );
         } else {
+            let arm_expr = emit_expr(
+                &arm.expr,
+                &arm_env,
+                Some(&result_ty),
+                func_returns,
+                fn_return_type,
+                temp_id,
+            )?;
             let _ = writeln!(
                 out,
                 "    if (({s}).tag == {tag}) {{ _zig_switch_result = {arm_expr}; }}"
