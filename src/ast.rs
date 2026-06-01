@@ -3,11 +3,35 @@
 // cover integer literals, variable refs, function calls, and binary operators.
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ArrayLen {
+    Known(usize),
+    Param(String),
+}
+
+impl ArrayLen {
+    pub fn known(&self) -> Option<usize> {
+        match self {
+            ArrayLen::Known(n) => Some(*n),
+            ArrayLen::Param(_) => None,
+        }
+    }
+}
+
+impl std::fmt::Display for ArrayLen {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ArrayLen::Known(n) => write!(f, "{n}"),
+            ArrayLen::Param(name) => f.write_str(name),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Type {
     Bool,
     Int(IntType),
     Array {
-        len: usize,
+        len: ArrayLen,
         elem: Box<Type>,
     },
     /// `[]const T` or `[]T` — fat pointer (ptr + len).
@@ -130,7 +154,7 @@ impl Type {
 
     pub fn array_len(&self) -> Option<usize> {
         match self {
-            Type::Array { len, .. } => Some(*len),
+            Type::Array { len, .. } => len.known(),
             _ => None,
         }
     }

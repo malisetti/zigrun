@@ -7,8 +7,8 @@
 // checked arithmetic — tracked in FEATURES.md.
 
 use crate::ast::{
-    AssignTarget, BinOp, EnumDef, ErrorSetDef, Expr, Function, GlobalVar, IntType, Program, Stmt,
-    StructDef, SwitchArm, SwitchTag, Type, UnionDef, UnionVariant,
+    ArrayLen, AssignTarget, BinOp, EnumDef, ErrorSetDef, Expr, Function, GlobalVar, IntType,
+    Program, Stmt, StructDef, SwitchArm, SwitchTag, Type, UnionDef, UnionVariant,
 };
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -960,10 +960,11 @@ fn emit_slice_struct_def(
     Ok(())
 }
 
-fn array_to_slice_expr(arr_expr: &str, len: usize, slice_ty: &Type) -> String {
+fn array_to_slice_expr(arr_expr: &str, len: &ArrayLen, slice_ty: &Type) -> String {
     format!(
-        "({}){{ .ptr = {arr_expr}, .len = {len} }}",
-        c_slice_name(slice_ty)
+        "({}){{ .ptr = {arr_expr}, .len = {} }}",
+        c_slice_name(slice_ty),
+        len
     )
 }
 
@@ -1078,7 +1079,7 @@ fn prototype(f: &Function) -> String {
     } else {
         f.params
             .iter()
-            .map(|(p, ty)| format!("{} {p}", c_type(ty)))
+            .map(|(p, ty)| c_var_decl(p, ty))
             .collect::<Vec<_>>()
             .join(", ")
     };
@@ -1218,7 +1219,7 @@ fn expr_type(
         Expr::ArrayLiteral { elems, annotated } => {
             if let Some((len_opt, elem)) = annotated {
                 Type::Array {
-                    len: len_opt.unwrap_or(elems.len()),
+                    len: ArrayLen::Known(len_opt.unwrap_or(elems.len())),
                     elem: Box::new(elem.clone()),
                 }
             } else if let Some(first) = elems.first() {
@@ -1226,12 +1227,12 @@ fn expr_type(
                     .int_type()
                     .unwrap_or(IntType::U8);
                 Type::Array {
-                    len: elems.len(),
+                    len: ArrayLen::Known(elems.len()),
                     elem: Box::new(Type::Int(elem)),
                 }
             } else {
                 Type::Array {
-                    len: 0,
+                    len: ArrayLen::Known(0),
                     elem: Box::new(Type::Int(IntType::U8)),
                 }
             }
@@ -1285,7 +1286,11 @@ fn field_expr_type(base: &Expr, field: &str, env: &HashMap<String, Type>) -> Typ
         Expr::StructLiteral { struct_name, .. } => Some(Type::Struct(struct_name.clone())),
         _ => None,
     };
-    if base_ty.as_ref().is_some_and(|t| t.is_slice()) && field == "len" {
+    if base_ty
+        .as_ref()
+        .is_some_and(|t| matches!(t, Type::Array { .. } | Type::Slice { .. }))
+        && field == "len"
+    {
         return Type::Int(IntType::U64);
     }
     if let Some(Type::Union(ref union_name)) = base_ty {
@@ -1311,7 +1316,7 @@ fn combine_types(a: Type, b: Type) -> Type {
         (Type::Int(x), _) => Type::Int(x),
         (_, Type::Int(y)) => Type::Int(y),
         (Type::Array { elem, .. }, Type::Array { elem: elem2, .. }) => Type::Array {
-            len: 0,
+            len: ArrayLen::Known(0),
             elem: Box::new(combine_types(elem.as_ref().clone(), elem2.as_ref().clone())),
         },
         (Type::Array { elem, .. }, _) | (_, Type::Array { elem, .. }) => elem
@@ -2663,7 +2668,7 @@ fn emit_expr(
             if let Some(slice_ty @ Type::Slice { .. }) = expected {
                 if let Type::Array { len, .. } = inner_ty {
                     let arr_s = emit_expr(inner, env, None, func_returns, fn_return_type, temp_id)?;
-                    return Ok(array_to_slice_expr(&arr_s, len, slice_ty));
+                    return Ok(array_to_slice_expr(&arr_s, &len, slice_ty));
                 }
             }
             format!(
@@ -2708,8 +2713,14 @@ fn emit_expr(
         }
         Expr::EmptyInit => return Err("empty init has no runtime value".to_string()),
         Expr::FieldAccess { base, field } => {
+            let base_ty = expr_type(base, env, func_returns);
+            if field == "len" {
+                if let Type::Array { len, .. } = base_ty {
+                    return Ok(len.to_string());
+                }
+            }
             let base_s = emit_expr(base, env, None, func_returns, fn_return_type, temp_id)?;
-            if let Type::Union(union_name) = expr_type(base, env, func_returns) {
+            if let Type::Union(union_name) = base_ty {
                 if let Some(udef) = lookup_union(&union_name) {
                     if udef.variants.iter().any(|v| v.name == *field) {
                         let _payload_ty = union_variant_payload_type(&udef, field)?;
