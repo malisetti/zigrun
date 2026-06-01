@@ -456,6 +456,7 @@ fn collect_optionals_in_expr(expr: &Expr, add: &mut dyn FnMut(&Type)) {
         Expr::Int(_)
         | Expr::Bool(_)
         | Expr::Null
+        | Expr::TypeValue(_)
         | Expr::StringLit(_)
         | Expr::DebugPrint { .. }
         | Expr::Undefined
@@ -629,6 +630,7 @@ fn collect_error_unions_in_expr(expr: &Expr, add: &mut dyn FnMut(&Type)) {
         Expr::Int(_)
         | Expr::Bool(_)
         | Expr::Null
+        | Expr::TypeValue(_)
         | Expr::StringLit(_)
         | Expr::DebugPrint { .. }
         | Expr::Undefined
@@ -907,6 +909,7 @@ fn collect_slices_in_expr(expr: &Expr, add: &mut dyn FnMut(&Type)) {
         Expr::Int(_)
         | Expr::Bool(_)
         | Expr::Null
+        | Expr::TypeValue(_)
         | Expr::StringLit(_)
         | Expr::DebugPrint { .. }
         | Expr::Undefined
@@ -1160,6 +1163,7 @@ fn expr_type(
         Expr::Int(_) => Type::Int(IntType::U8),
         Expr::Bool(_) => Type::Bool,
         Expr::Null => Type::Int(IntType::U8),
+        Expr::TypeValue(_) => Type::Type,
         Expr::Undefined => Type::Int(IntType::U8),
         Expr::Var(name) => env.get(name).cloned().unwrap_or(Type::Int(IntType::U8)),
         Expr::EnumLiteral {
@@ -2177,6 +2181,7 @@ fn emit_expr(
                 return Err("null requires optional type context".to_string());
             }
         }
+        Expr::TypeValue(_) => return Err("type value has no runtime representation".to_string()),
         Expr::Bool(v) => {
             if *v {
                 "true".to_string()
